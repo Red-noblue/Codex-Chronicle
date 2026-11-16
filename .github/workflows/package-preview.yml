@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 仅构建测试包的预览版本，例如 0.1.0-preview.9
+        description: 仅构建测试包的预览版本，例如 0.1.0-preview.10
         required: true
         type: string
 permissions:
@@ -126,6 +126,21 @@ jobs:
           export CHRONICLE_PAYLOAD="$GITHUB_WORKSPACE/dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/payload"
           go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager deb --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/"
           go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/"
+      - name: 校验 Linux 安装包解包内容与启动
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm2cpio cpio
+          chronicle_extract="$(mktemp -d)"
+          trap 'rm -rf "$chronicle_extract"' EXIT
+          chronicle_packages="$GITHUB_WORKSPACE/dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH"
+          mkdir "$chronicle_extract/deb" "$chronicle_extract/rpm"
+          dpkg-deb -x "$chronicle_packages/"*.deb "$chronicle_extract/deb"
+          (cd "$chronicle_extract/rpm" && rpm2cpio "$chronicle_packages/"*.rpm | cpio -idm --quiet)
+          for chronicle_format in deb rpm; do
+            python3 scripts/verify-linux-package.py "$chronicle_extract/$chronicle_format/usr/lib/codex-chronicle" "$CHRONICLE_VERSION" "$CHRONICLE_ARCH"
+          done
       - name: 汇总全部安装包摘要
         shell: bash
         env:

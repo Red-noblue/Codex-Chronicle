@@ -14,6 +14,9 @@ scripts:
   preremove: packaging/linux/before-change.sh
 contents:
   - src: ${CHRONICLE_PAYLOAD}/licenses/
+    dst: /usr/lib/codex-chronicle/licenses/
+    expand: true
+  - src: ${CHRONICLE_PAYLOAD}/licenses/
     dst: /usr/share/doc/codex-chronicle/
     expand: true
   - src: ${CHRONICLE_PAYLOAD}/bin/

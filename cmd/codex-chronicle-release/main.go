@@ -91,6 +91,9 @@ func buildReleaseArchive(ctx context.Context, options releaseOptions) error {
 		return fmt.Errorf("创建发布 staging 目录失败：%w", err)
 	}
 	defer os.RemoveAll(stage)
+	if err := os.Chmod(stage, 0o755); err != nil {
+		return err
+	}
 
 	binaryName := "codex-chronicle"
 	if options.TargetOS == "windows" {
@@ -138,6 +141,10 @@ func buildReleaseArchive(ctx context.Context, options releaseOptions) error {
 	if err := updatepkg.WriteManifest(ctx, stage, manifest); err != nil {
 		return fmt.Errorf("写入发布 manifest 失败：%w", err)
 	}
+	// 公开安装载荷不包含用户数据；清单须能被系统安装目录下的普通用户读取。
+	if err := os.Chmod(filepath.Join(stage, updatepkg.ManifestName), 0o644); err != nil {
+		return err
+	}
 	if options.Format == "directory" {
 		return os.Rename(stage, output)
 	}
@@ -184,6 +191,9 @@ func writeMacApp(ctx context.Context, payload, output, version, installer string
 		return err
 	}
 	defer os.RemoveAll(app)
+	if err := os.Chmod(app, 0o755); err != nil {
+		return err
+	}
 	if installer != "" {
 		if err := copyRegularFile(ctx, installer, filepath.Join(app, "Contents", "Resources", "install-macos.sh"), 0o755); err != nil {
 			return err

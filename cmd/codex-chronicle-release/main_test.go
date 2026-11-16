@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -102,6 +103,21 @@ func TestMacAppCarriesLauncherBridgeAndRelativePayload(t *testing.T) {
 	for _, relative := range []string{"bin/codex-chronicle", "bin/codex-chronicle-desktop", "bin/chronicle-native-trash", "web/index.html", updatepkg.ManifestName} {
 		if _, err := os.Stat(filepath.Join(payload, relative)); err != nil {
 			t.Fatalf("应用缺失 %s：%v", relative, err)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		for _, relative := range []string{".", "Contents/Resources/app", "Contents/Resources/app/" + updatepkg.ManifestName} {
+			info, err := os.Stat(filepath.Join(output, relative))
+			if err != nil {
+				t.Fatal(err)
+			}
+			required := os.FileMode(0o004)
+			if info.IsDir() {
+				required |= 0o001
+			}
+			if info.Mode().Perm()&required != required {
+				t.Fatalf("系统安装后的普通用户无法读取 %s：%v", relative, info.Mode())
+			}
 		}
 	}
 	if _, err := os.Stat(filepath.Join(output, "Contents", "Resources", "install-macos.sh")); err != nil {
