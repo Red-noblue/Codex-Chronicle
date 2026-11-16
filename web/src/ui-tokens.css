@@ -1,0 +1,55 @@
+/* 中文说明：统一字号、控件和留白；密度只改变空间，正文保持可读，rem 随浏览器字号缩放。 */
+:root {
+  --font-caption: .75rem;
+  --font-ui: .8125rem;
+  --font-body: .875rem;
+  --font-title: 1rem;
+  --font-heading: 1.125rem;
+  --font-metric: 1.5rem;
+  --font-reading: 1rem;
+  --line-ui: 1.5;
+  --line-control: 1.25;
+  --line-reading: 1.75;
+  --space-half: .125rem;
+  --space-1: .25rem;
+  --space-2: .5rem;
+  --space-3: .75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --radius-control: .375rem;
+  --radius-card: .5rem;
+  --radius-panel: .625rem;
+  --radius-dialog: .75rem;
+  --control-sm: 1.75rem;
+  --control-md: 2rem;
+  --control-touch: 2.75rem;
+  --row-comfortable: 6rem;
+  --row-compact: 4.5rem;
+  --row-reading: 3.5rem;
+}
+
+.app-shell {
+  --conversation-row-height: var(--row-comfortable);
+  --layout-gap: var(--space-2);
+  --layout-inset: var(--space-3);
+  --content-inset: var(--space-4);
+  --card-inset: var(--space-3);
+  --section-gap: var(--space-3);
+  --panel-heading-height: 2.75rem;
+}
+
+.app-shell.density-compact {
+  --conversation-row-height: var(--row-compact);
+  --layout-inset: var(--space-2);
+  --content-inset: var(--space-3);
+  --card-inset: var(--space-2);
+  --section-gap: var(--space-2);
+  --panel-heading-height: 2.5rem;
+}
+
+.app-shell.density-reading {
+  --conversation-row-height: var(--row-reading);
+  --content-inset: var(--space-5);
+  --card-inset: var(--space-4);
+}

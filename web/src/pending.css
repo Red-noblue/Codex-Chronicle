@@ -1,0 +1,101 @@
+/* 中文说明：待处理页以分队列列表组织关注、暂存和恢复；复用全局主题与密度，不改变其他工作区。 */
+.pending-workspace { width: min(1240px, 100%); min-width: 0; margin: 0 auto; }
+.pending-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.pending-page-heading h2 { margin: 0 0 5px; font-size: var(--font-heading); font-weight: 600; }
+.pending-page-heading > div { min-width: 0; }
+.pending-page-heading > div > span { display: block; overflow: hidden; color: var(--text-muted); font-size: var(--font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.pending-refresh { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.pending-workspace svg { flex-shrink: 0; width: 16px; height: 16px; }
+.pending-queue-tabs { display: flex; gap: 20px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.pending-queue-tabs > button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; min-height: 44px; padding: 0 2px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); font: inherit; font-size: var(--font-ui); cursor: pointer; }
+.pending-queue-tabs > button.active { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
+.pending-queue-tabs small { min-width: 20px; padding: 1px 5px; border-radius: 4px; background: var(--bg-hover); color: var(--text-secondary); font-size: var(--font-caption); text-align: center; }
+.pending-queue-tabs .active small { background: var(--bg-selected); color: var(--accent); }
+.pending-queue-panel { min-width: 0; margin-top: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--bg-surface); }
+.pending-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: var(--card-inset); border-bottom: 1px solid var(--border); }
+.pending-search { display: flex; flex: 1 1 240px; align-items: center; gap: 8px; min-width: 0; max-width: 520px; height: var(--control-md); padding-left: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); color: var(--text-muted); }
+.pending-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pending-search input { width: 100%; min-width: 0; padding: 0; border: 0; outline: none; background: transparent; color: var(--text-primary); font: inherit; font-size: var(--font-ui); }
+.pending-search > button { display: grid; flex-shrink: 0; place-items: center; width: 34px; height: 100%; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.pending-state-filter { flex: 0 1 174px; min-width: 0; }
+.pending-state-filter select { width: 100%; min-width: 0; height: var(--control-md); padding: 0 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: var(--font-ui); }
+.pending-queue-caption { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 5px 12px; padding: 10px var(--card-inset); color: var(--text-muted); font-size: var(--font-caption); }
+.pending-queue-caption small { font-size: inherit; }
+.pending-rows { display: grid; }
+.pending-session-row { display: flex; align-items: center; gap: 20px; width: 100%; min-width: 0; padding: var(--card-inset) 16px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
+.pending-session-row:hover, .pending-intent-row:hover, .pending-recovery-row:hover { background: var(--bg-subtle); }
+.pending-row-copy { display: grid; flex: 1; gap: 6px; min-width: 0; }
+.pending-row-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
+.pending-row-heading > strong { flex: 1 1 180px; min-width: 0; overflow: hidden; font-size: var(--font-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pending-row-heading .status-pill { flex: 0 1 auto; max-width: 100%; overflow: hidden; font-size: var(--font-caption); text-overflow: ellipsis; }
+.pending-row-preview { display: block; overflow: hidden; color: var(--text-secondary); font-size: var(--font-ui); line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
+.pending-row-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; min-width: 0; color: var(--text-muted); font-size: var(--font-caption); line-height: 1.6; }
+.pending-row-meta > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-session-row .pending-row-meta > span:first-child { max-width: min(40vw, 280px); }
+.pending-row-trailing { display: flex; flex: 0 0 auto; align-items: center; gap: 16px; color: var(--text-muted); font-size: var(--font-ui); }
+.pending-row-trailing > span { display: grid; gap: 2px; text-align: right; }
+.pending-row-trailing small { font-size: var(--font-caption); }
+.pending-intent-row, .pending-recovery-row { display: flex; align-items: center; gap: 16px; min-width: 0; padding: var(--card-inset) 16px; border-top: 1px solid var(--border); }
+.pending-intent-open { display: grid; flex: 1; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
+.pending-text-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; min-height: var(--control-md); padding: 4px 2px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--accent); font: inherit; font-size: var(--font-ui); cursor: pointer; }
+.pending-text-button:hover, .pending-search > button:hover { background: var(--bg-hover); }
+.pending-recovery-row p { display: -webkit-box; margin: 0; overflow: hidden; color: var(--text-secondary); font-size: var(--font-ui); line-height: 1.6; overflow-wrap: anywhere; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.pending-empty { display: grid; justify-items: center; gap: 10px; min-height: 240px; padding: 36px 20px; color: var(--text-muted); font-size: var(--font-ui); text-align: center; }
+.pending-empty > svg { width: 30px; height: 30px; color: var(--text-muted); }
+.pending-empty > strong { max-width: 100%; color: var(--text-secondary); font-size: var(--font-body); font-weight: 500; overflow-wrap: anywhere; }
+.pending-empty > span { max-width: 400px; line-height: 1.7; }
+.pending-list-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px var(--card-inset); border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--font-caption); }
+.pending-feedback { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 8px var(--card-inset); padding: 10px 12px; border: 1px solid var(--info-border); border-radius: var(--radius-control); background: var(--info-bg); color: var(--info); font-size: var(--font-ui); line-height: 1.6; overflow-wrap: anywhere; }
+.pending-feedback.error { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger); }
+.pending-feedback.warning { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning); }
+.pending-feedback button { padding: 4px; border: 0; background: transparent; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+.pending-related { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 16px; }
+.pending-related > button { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 36px; padding: 4px 0; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-ui); cursor: pointer; }
+.pending-related small { color: var(--text-muted); font-size: var(--font-caption); }
+.pending-related > button:hover { color: var(--accent); }
+.pending-workspace :focus-visible, .pending-inspector :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pending-workspace .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.pending-inspector { display: grid; gap: 16px; min-width: 0; }
+.pending-inspector-heading { display: grid; gap: 9px; justify-items: start; min-width: 0; }
+.pending-inspector-heading strong { display: -webkit-box; max-width: 100%; overflow: hidden; font-size: var(--font-body); line-height: 1.6; overflow-wrap: anywhere; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.pending-inspector p { margin: 0; color: var(--text-secondary); font-size: var(--font-ui); line-height: 1.7; overflow-wrap: anywhere; }
+.pending-inspector h3 { margin: 0 0 8px; font-size: var(--font-ui); font-weight: 600; }
+.pending-inspector dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: var(--font-caption); line-height: 1.7; }
+.pending-inspector dt { color: var(--text-muted); }
+.pending-inspector dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.pending-inspector code { font-size: var(--font-caption); overflow-wrap: anywhere; }
+.pending-inspector details { min-width: 0; padding-block: 12px; border-top: 1px solid var(--border); }
+.pending-inspector summary { color: var(--text-secondary); font-size: var(--font-ui); cursor: pointer; }
+.pending-inspector details > div, .pending-inspector details > dl { margin-top: 12px; }
+.pending-inspector-assets { display: grid; gap: 8px; }
+.pending-inspector-assets > div { display: grid; gap: 5px; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.pending-inspector-assets span { color: var(--text-muted); font-size: var(--font-caption); }
+.pending-inspector-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pending-inspector-actions > button { min-height: var(--control-md); }
+.pending-confirm-form { display: grid; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.pending-confirm-form label { display: grid; gap: 6px; color: var(--text-secondary); font-size: var(--font-ui); line-height: 1.7; }
+.pending-confirm-form input:not([type=checkbox]) { width: 100%; min-width: 0; min-height: var(--control-md); padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--bg-surface); color: var(--text-primary); font: inherit; }
+.pending-confirm-form .pending-review-check { display: flex; align-items: flex-start; gap: 8px; }
+.pending-review-check input { flex-shrink: 0; margin-top: 6px; accent-color: var(--accent-solid); }
+.pending-inspector .pending-feedback { margin: 0; }
+@keyframes pending-spin { to { transform: rotate(360deg); } }
+.pending-spinning { animation: pending-spin 1s linear infinite; }
+@media (max-width: 639px) {
+  .pending-heading-note { display: none; }
+  .pending-queue-tabs { gap: 14px; }
+  .pending-queue-tabs > button { gap: 5px; }
+  .pending-queue-tabs > button > svg { display: none; }
+  .pending-row-trailing > span { display: none; }
+  .pending-session-row, .pending-intent-row, .pending-recovery-row { gap: 8px; padding-inline: 12px; }
+  .pending-intent-row, .pending-recovery-row { flex-wrap: wrap; }
+  .pending-intent-open, .pending-recovery-row .pending-row-copy { flex-basis: 100%; }
+  .pending-intent-row > .pending-text-button, .pending-recovery-row > .pending-text-button { margin-left: auto; }
+  .pending-state-filter { flex: 1 1 160px; }
+  .pending-search { max-width: none; }
+  .pending-related > button { flex-wrap: wrap; }
+  .pending-related small { white-space: normal; }
+}
+@media (pointer: coarse) {
+  .pending-refresh, .pending-text-button, .pending-state-filter select, .pending-search, .pending-inspector-actions > button { min-height: var(--control-touch); }
+}
+@media (prefers-reduced-motion: reduce) { .pending-spinning { animation: none; } }

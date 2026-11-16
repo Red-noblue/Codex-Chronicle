@@ -1,0 +1,2 @@
+# 中文说明：跨平台源码统一使用 LF，避免 Windows 检出改变脚本与测试样本。
+* text=auto eol=lf

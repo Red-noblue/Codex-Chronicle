@@ -1,0 +1,73 @@
+/* 中文说明：以语义颜色统一所有工作区的明暗主题，默认使用适合长文本阅读的亮色。 */
+:root {
+  color-scheme: light;
+  --bg-canvas: #f4f6f9;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f7f8fb;
+  --bg-hover: #edf0f5;
+  --bg-selected: #eaf0ff;
+  --border: #dce2eb;
+  --border-strong: #bac5d5;
+  --text-primary: #202b3c;
+  --text-secondary: #4a586c;
+  --text-muted: #626f83;
+  --accent: #315bc0;
+  --accent-solid: #365cc8;
+  --accent-solid-hover: #294ba9;
+  --on-accent: #ffffff;
+  --success: #236745;
+  --success-bg: #edf7f0;
+  --success-border: #a9d1b6;
+  --success-solid: #246d49;
+  --warning: #815300;
+  --warning-bg: #fff7e6;
+  --warning-border: #dfc58b;
+  --danger: #ad3043;
+  --danger-bg: #fff0f2;
+  --danger-border: #e4b0b9;
+  --danger-solid: #b43348;
+  --info: #246772;
+  --info-bg: #edf7f9;
+  --info-border: #a8cfd7;
+  --violet: #7350a4;
+  --violet-bg: #f3eef9;
+  --violet-border: #d2c0e7;
+  --shadow: 0 2px 8px rgb(32 43 60 / 4%);
+  --overlay-shadow: 0 12px 40px rgb(32 43 60 / 12%);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-canvas: #12161e;
+  --bg-surface: #1b212c;
+  --bg-subtle: #181e28;
+  --bg-hover: #262f3d;
+  --bg-selected: #263650;
+  --border: #323e50;
+  --border-strong: #53627a;
+  --text-primary: #e6ecf5;
+  --text-secondary: #bdc8d9;
+  --text-muted: #a0aec3;
+  --accent: #a6bcff;
+  --accent-solid: #3e62cf;
+  --accent-solid-hover: #4b70de;
+  --success: #a0dfb8;
+  --success-bg: #1b3027;
+  --success-border: #406651;
+  --success-solid: #246d49;
+  --warning: #efc780;
+  --warning-bg: #332b1e;
+  --warning-border: #70603f;
+  --danger: #ffb0bc;
+  --danger-bg: #38252e;
+  --danger-border: #74424f;
+  --danger-solid: #b43348;
+  --info: #9bd5df;
+  --info-bg: #1d303a;
+  --info-border: #3e6570;
+  --violet: #cbb6f1;
+  --violet-bg: #2c263d;
+  --violet-border: #5f4d7f;
+  --shadow: 0 2px 8px rgb(0 0 0 / 8%);
+  --overlay-shadow: 0 12px 40px rgb(0 0 0 / 24%);
+}

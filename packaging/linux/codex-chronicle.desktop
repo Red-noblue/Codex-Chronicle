@@ -1,0 +1,11 @@
+# 中文说明：Linux 桌面入口，使用系统浏览器打开本机工作台。
+[Desktop Entry]
+Type=Application
+Name=Codex Chronicle
+Name[zh_CN]=Codex Chronicle 对话档案库
+Comment=浏览和管理本机 Codex 对话
+Exec=/usr/lib/codex-chronicle/bin/codex-chronicle-desktop
+Icon=folder-documents
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=false

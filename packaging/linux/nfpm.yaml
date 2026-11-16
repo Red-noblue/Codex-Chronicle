@@ -1,0 +1,29 @@
+# 中文说明：将共同载荷打包为 DEB/RPM；不安装系统服务、不创建符号链接、不删除任何用户数据。
+name: codex-chronicle
+arch: ${CHRONICLE_ARCH}
+platform: linux
+version: ${CHRONICLE_VERSION}
+section: utils
+priority: optional
+homepage: https://github.com/RED-NOBLUE/Codex-Chronicle
+description: 本地 Codex 对话档案库，使用系统浏览器浏览和管理历史记录。
+maintainer: RED-NOBLUE
+license: MIT
+scripts:
+  preinstall: packaging/linux/before-change.sh
+  preremove: packaging/linux/before-change.sh
+contents:
+  - src: ${CHRONICLE_PAYLOAD}/licenses/
+    dst: /usr/share/doc/codex-chronicle/
+    expand: true
+  - src: ${CHRONICLE_PAYLOAD}/bin/
+    dst: /usr/lib/codex-chronicle/bin/
+    expand: true
+  - src: ${CHRONICLE_PAYLOAD}/web/
+    dst: /usr/lib/codex-chronicle/web/
+    expand: true
+  - src: ${CHRONICLE_PAYLOAD}/codex-chronicle-release.json
+    dst: /usr/lib/codex-chronicle/codex-chronicle-release.json
+    expand: true
+  - src: packaging/linux/codex-chronicle.desktop
+    dst: /usr/share/applications/codex-chronicle.desktop

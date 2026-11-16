@@ -1,0 +1,1698 @@
+{
+  "snapshot_version": 1,
+  "source_report": "本机 Codex Schema inventory.json",
+  "databases": [
+    {
+      "name": "goals_1.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "thread_goal_continuation_deferrals": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_thread_goal_continuation_deferrals_1"
+          ]
+        },
+        "thread_goals": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "goal_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "objective",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "status",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "token_budget",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "tokens_used",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "time_used_seconds",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_thread_goals_1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "logs_2.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "logs": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "ts",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "ts_nanos",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "level",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "target",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "feedback_log_body",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "module_path",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "file",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "line",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "process_uuid",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "estimated_bytes",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_logs_process_uuid_threadless_ts",
+            "idx_logs_thread_id_ts",
+            "idx_logs_thread_id",
+            "idx_logs_ts"
+          ]
+        }
+      }
+    },
+    {
+      "name": "memories_1.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "consolidation_progress": {
+          "columns": [
+            {
+              "name": "singleton",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "max_thread_count",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": []
+        },
+        "jobs": {
+          "columns": [
+            {
+              "name": "kind",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "job_key",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "status",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "worker_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "ownership_token",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "started_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "finished_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "lease_until",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "retry_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "retry_remaining",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_error",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "input_watermark",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_success_watermark",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_jobs_kind_status_retry_lease",
+            "sqlite_autoindex_jobs_1"
+          ]
+        },
+        "stage1_outputs": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "source_updated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "raw_memory",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_summary",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_slug",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "generated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "usage_count",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_usage",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "selected_for_phase2",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "selected_for_phase2_source_updated_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_stage1_outputs_source_updated_at",
+            "sqlite_autoindex_stage1_outputs_1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "queue_1.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "queued_items": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "payload_json",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "queue_order",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "queued_items_thread_order_idx",
+            "sqlite_autoindex_queued_items_1"
+          ]
+        },
+        "queued_thread_revisions": {
+          "columns": [
+            {
+              "name": "revision",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_queued_thread_revisions_1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "state_5.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "backfill_state": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "status",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_watermark",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_success_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": []
+        },
+        "external_agent_config_imports": {
+          "columns": [
+            {
+              "name": "import_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "completed_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "successes",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "failures",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "provider_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_external_agent_config_imports_1"
+          ]
+        },
+        "guardian_review_feedback": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "record",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_guardian_review_feedback_1"
+          ]
+        },
+        "project_idempotency_keys": {
+          "columns": [
+            {
+              "name": "key",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "project_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_project_idempotency_keys_1"
+          ]
+        },
+        "project_roots": {
+          "columns": [
+            {
+              "name": "project_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "position",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "path",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_project_roots_1"
+          ]
+        },
+        "projects": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "name",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "metadata",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "position",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_projects_position",
+            "sqlite_autoindex_projects_1"
+          ]
+        },
+        "remote_control_enrollments": {
+          "columns": [
+            {
+              "name": "websocket_url",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "account_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "app_server_client_name",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 3
+            },
+            {
+              "name": "server_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "environment_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "server_name",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "remote_control_enabled",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_remote_control_enrollments_1"
+          ]
+        },
+        "rollout_migration_skipped_rollouts": {
+          "columns": [
+            {
+              "name": "migration_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "rollout_path",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "rollout_size_bytes",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_modified_at_ns",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "skip_reason",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "skipped_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_rollout_migration_skipped_rollouts_1"
+          ]
+        },
+        "rollout_migration_state": {
+          "columns": [
+            {
+              "name": "migration_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "last_checked_thread_created_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_checked_thread_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_rollout_migration_state_1"
+          ]
+        },
+        "thread_attachments": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "attachment_type",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "identity_key",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "payload",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_attachments_identity_thread",
+            "idx_thread_attachments_thread_created_id",
+            "sqlite_autoindex_thread_attachments_2",
+            "sqlite_autoindex_thread_attachments_1"
+          ]
+        },
+        "thread_dynamic_tools": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "position",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "name",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "input_schema",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "defer_loading",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "namespace",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_dynamic_tools_thread",
+            "sqlite_autoindex_thread_dynamic_tools_1"
+          ]
+        },
+        "thread_read_receipts": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "first_unread_turn",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "revision",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "last_published_turn",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_thread_read_receipts_1"
+          ]
+        },
+        "thread_sections": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "name",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "appearance",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_thread_sections_1"
+          ]
+        },
+        "thread_spawn_edges": {
+          "columns": [
+            {
+              "name": "parent_thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "child_thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "status",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_spawn_edges_parent_status",
+            "sqlite_autoindex_thread_spawn_edges_1"
+          ]
+        },
+        "threads": {
+          "columns": [
+            {
+              "name": "id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "rollout_path",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "source",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "model_provider",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "cwd",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "title",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "sandbox_policy",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "approval_mode",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "tokens_used",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "has_user_event",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "archived",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "archived_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "git_sha",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "git_branch",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "git_origin_url",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "cli_version",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "first_user_message",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "agent_nickname",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "agent_role",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "memory_mode",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "model",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "reasoning_effort",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "agent_path",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "thread_source",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "preview",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "recency_at",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "recency_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "history_mode",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "name",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "is_pinned",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "thread_section_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "section_position",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "section_entered_at_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "project_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "originator",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "daybreak_enabled",
+              "type": "BOOLEAN",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "creator_user_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "creator_account_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_threads_archive_recency_at_ms",
+            "idx_threads_archive_updated_at_ms",
+            "idx_threads_archive_created_at_ms",
+            "idx_threads_project_recency",
+            "idx_threads_section_position",
+            "idx_threads_section_recency_at_ms",
+            "idx_threads_project_id",
+            "idx_threads_pinned_recency_at_ms",
+            "idx_threads_visible_recency_at_ms",
+            "idx_threads_archived_cwd_recency_at_ms",
+            "idx_threads_recency_at_ms",
+            "idx_threads_visible_updated_at_ms",
+            "idx_threads_visible_created_at_ms",
+            "idx_threads_archived_cwd_updated_at_ms",
+            "idx_threads_archived_cwd_created_at_ms",
+            "idx_threads_updated_at_ms",
+            "idx_threads_created_at_ms",
+            "idx_threads_provider",
+            "idx_threads_source",
+            "idx_threads_archived",
+            "idx_threads_updated_at",
+            "idx_threads_created_at",
+            "sqlite_autoindex_threads_1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "thread_history_1.sqlite",
+      "tables": {
+        "_sqlx_migrations": {
+          "columns": [
+            {
+              "name": "version",
+              "type": "BIGINT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "description",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "installed_on",
+              "type": "TIMESTAMP",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "success",
+              "type": "BOOLEAN",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "checksum",
+              "type": "BLOB",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "execution_time",
+              "type": "BIGINT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex__sqlx_migrations_1"
+          ]
+        },
+        "thread_history_projection_state": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 1
+            },
+            {
+              "name": "next_rollout_byte_offset",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "next_rollout_ordinal",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "sqlite_autoindex_thread_history_projection_state_1"
+          ]
+        },
+        "thread_items": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "turn_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "item_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 3
+            },
+            {
+              "name": "rollout_ordinal",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "item_json",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "item_type",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "updated_at_ordinal",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "started_at_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "completed_at_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_items_by_turn_updated_page",
+            "idx_thread_items_updated_page",
+            "idx_thread_items_user_messages",
+            "idx_thread_items_by_turn_page",
+            "idx_thread_items_page",
+            "sqlite_autoindex_thread_items_1"
+          ]
+        },
+        "thread_realtime_items": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "item_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "rollout_ordinal",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "created_at_ms",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "item_type",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "item_json",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_realtime_items_boundary",
+            "idx_thread_realtime_items_page",
+            "sqlite_autoindex_thread_realtime_items_1"
+          ]
+        },
+        "thread_turns": {
+          "columns": [
+            {
+              "name": "thread_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 1
+            },
+            {
+              "name": "turn_id",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 2
+            },
+            {
+              "name": "rollout_ordinal",
+              "type": "INTEGER",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "status",
+              "type": "TEXT",
+              "notnull": true,
+              "primary_key_position": 0
+            },
+            {
+              "name": "error_json",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "started_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "completed_at",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "duration_ms",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "first_user_item_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "final_agent_item_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_byte_offset",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_end_ordinal",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "rollout_end_byte_offset",
+              "type": "INTEGER",
+              "notnull": false,
+              "primary_key_position": 0
+            },
+            {
+              "name": "root_turn_id",
+              "type": "TEXT",
+              "notnull": false,
+              "primary_key_position": 0
+            }
+          ],
+          "indexes": [
+            "idx_thread_turns_end_page",
+            "idx_thread_turns_page",
+            "sqlite_autoindex_thread_turns_1"
+          ]
+        }
+      }
+    }
+  ]
+}

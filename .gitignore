@@ -1,0 +1,48 @@
+# Codex Chronicle 工程生成物和本地运行数据忽略规则
+
+.DS_Store
+Thumbs.db
+
+# Go 构建和测试生成物
+/bin/
+/dist/
+/build/
+/coverage/
+*.test
+*.out
+
+# 本地运行数据、数据库、日志和凭证
+/.local/
+/var/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+*.key
+*.pem
+.env
+.env.*
+
+# Web 依赖和构建输出
+/web/node_modules/
+/web/dist/
+/web/build/
+
+# Python/Rust 辅助验证生成物
+__pycache__/
+*.pyc
+target/
+
+# 从本机 Codex 会话生成的路径与字节范围索引，不进入源码仓库
+/docs/项目验证/framing-index/
+
+# 本机讨论、调查、真实来源样本和第三方本地技能不作为公开源码发布
+/.agents/
+/docs/*
+!/docs/项目验证/
+/docs/项目验证/*
+!/docs/项目验证/authorized_live.py
+!/docs/项目验证/test_authorized_live.py
+!/docs/项目验证/codex_realshape_fixture.py
+!/docs/项目验证/codex_schema_snapshot.json
