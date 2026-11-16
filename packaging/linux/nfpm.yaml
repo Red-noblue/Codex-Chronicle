@@ -13,20 +13,11 @@ scripts:
   preinstall: packaging/linux/before-change.sh
   preremove: packaging/linux/before-change.sh
 contents:
-  - src: ${CHRONICLE_PAYLOAD}/licenses/
-    dst: /usr/lib/codex-chronicle/licenses/
-    expand: true
+  - src: ${CHRONICLE_PAYLOAD}/
+    dst: /usr/lib/codex-chronicle/
+    type: tree
   - src: ${CHRONICLE_PAYLOAD}/licenses/
     dst: /usr/share/doc/codex-chronicle/
-    expand: true
-  - src: ${CHRONICLE_PAYLOAD}/bin/
-    dst: /usr/lib/codex-chronicle/bin/
-    expand: true
-  - src: ${CHRONICLE_PAYLOAD}/web/
-    dst: /usr/lib/codex-chronicle/web/
-    expand: true
-  - src: ${CHRONICLE_PAYLOAD}/codex-chronicle-release.json
-    dst: /usr/lib/codex-chronicle/codex-chronicle-release.json
-    expand: true
+    type: tree
   - src: packaging/linux/codex-chronicle.desktop
     dst: /usr/share/applications/codex-chronicle.desktop

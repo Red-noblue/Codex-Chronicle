@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 仅构建测试包的预览版本，例如 0.1.0-preview.10
+        description: 仅构建测试包的预览版本，例如 0.1.0-preview.11
         required: true
         type: string
 permissions:
@@ -137,7 +137,7 @@ jobs:
           chronicle_packages="$GITHUB_WORKSPACE/dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH"
           mkdir "$chronicle_extract/deb" "$chronicle_extract/rpm"
           dpkg-deb -x "$chronicle_packages/"*.deb "$chronicle_extract/deb"
-          (cd "$chronicle_extract/rpm" && rpm2cpio "$chronicle_packages/"*.rpm | cpio -idm --quiet)
+          (cd "$chronicle_extract/rpm" && rpm2cpio "$chronicle_packages/"*.rpm | cpio -idm --quiet --no-absolute-filenames)
           for chronicle_format in deb rpm; do
             python3 scripts/verify-linux-package.py "$chronicle_extract/$chronicle_format/usr/lib/codex-chronicle" "$CHRONICLE_VERSION" "$CHRONICLE_ARCH"
           done

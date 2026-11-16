@@ -84,7 +84,7 @@ go run ./cmd/codex-chronicle --scan-root /absolute/path/to/codex-home --archive-
 构建安装包：
 
 ```bash
-bash scripts/build-release.sh 0.1.0-preview.10 darwin arm64
+bash scripts/build-release.sh 0.1.0-preview.11 darwin arm64
 ```
 
 支持 `darwin / windows / linux` 与 `arm64 / amd64` 组合；macOS 包须在 macOS 构建。Windows EXE、Linux DEB/RPM 由仓库 Actions 工作流进一步封装。
