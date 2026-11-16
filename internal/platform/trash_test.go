@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,9 @@ func TestFilesystemTrashRejectsArchiveDirectoryWithSymlink(t *testing.T) {
 }
 
 func TestFilesystemTrashEscapesLinuxTrashInfoPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 文件名不允许 Linux 回收站 URL 转义样本中的问号")
+	}
 	base := t.TempDir()
 	root := filepath.Join(base, "源 #目录", "项目")
 	if err := os.MkdirAll(root, 0o755); err != nil {

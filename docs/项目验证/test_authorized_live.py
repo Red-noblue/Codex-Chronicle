@@ -59,6 +59,9 @@ class AuthorizedLiveTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='chronicle-authorized-test-')
         self.addCleanup(self.temp.cleanup)
         self.base = pathlib.Path(self.temp.name).resolve()
+        home = patch.object(live.pathlib.Path, 'home', return_value=self.base / 'home')
+        home.start()
+        self.addCleanup(home.stop)
         self.root = self.base / 'source'
         self.root.mkdir()
         self.target = sorted(live.ALLOWED_IDS)[1]

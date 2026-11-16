@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScanLiveJSONLMarksPendingLine(t *testing.T) {
@@ -121,6 +122,10 @@ func TestClassifyLiveStateRejectsTruncationAndRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(`{"type":"bbbbbbbb"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamp := rewriteBefore.modTime.Add(time.Second)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
 	rewriteAfter, err := regularFileState(path)

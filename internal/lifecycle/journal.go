@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"codex-chronicle.local/internal/compat"
+	"codex-chronicle.local/internal/durablefs"
 )
 
 // JournalPhase 表示一次操作 saga 的持久化阶段。
@@ -422,16 +423,7 @@ func ensureJournalDirectory(path string) error {
 }
 
 func syncJournalDirectory(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		// Windows 和部分网络文件系统不允许打开目录；文件级 Sync 仍已执行。
-		return nil
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	return nil
+	return durablefs.SyncDirectory(path)
 }
 
 func validPhaseTransition(from, to JournalPhase) bool {

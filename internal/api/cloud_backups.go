@@ -18,6 +18,7 @@ import (
 
 	"codex-chronicle.local/internal/archive"
 	"codex-chronicle.local/internal/compat/authorizedlive"
+	"codex-chronicle.local/internal/durablefs"
 )
 
 type cloudAsset struct {
@@ -210,12 +211,7 @@ func (state *cloudBackupState) save(task cloudTask) error {
 	if err := os.Rename(file.Name(), filepath.Join(state.root, task.ID+".json")); err != nil {
 		return err
 	}
-	dir, err := os.Open(state.root)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return durablefs.SyncDirectory(state.root)
 }
 
 func (state *cloudBackupState) publish(task *cloudTask) error {
@@ -854,10 +850,5 @@ func prepareCloudRecoveryStaging(root string, task cloudTask) (string, error) {
 }
 
 func syncCloudDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return durablefs.SyncDirectory(path)
 }

@@ -444,10 +444,11 @@ func TestStableCopyEndpointsRequirePrepareThenExplicitExecute(t *testing.T) {
 	destination := filepath.Join(base, "copies", "one")
 
 	previewBody, err := json.Marshal(map[string]any{
-		"destination_root": destination,
-		"chunk_bytes":      32768,
-		"exclude_paths":    []string{"auth.json"},
-		"marker":           map[string]string{"adapter_id": "observed-test", "schema_sha256": "schema-test"},
+		"destination_root":                destination,
+		"allow_unavailable_process_probe": runtime.GOOS == "windows",
+		"chunk_bytes":                     32768,
+		"exclude_paths":                   []string{"auth.json"},
+		"marker":                          map[string]string{"adapter_id": "observed-test", "schema_sha256": "schema-test"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +512,7 @@ func TestStableCopyEndpointsRequirePrepareThenExplicitExecute(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/copies/verify", strings.NewReader(`{"root":"`+destination+`"}`))
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/copies/verify", strings.NewReader(`{"root":`+strconv.Quote(destination)+`}`))
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("copy verify endpoint failed: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -530,7 +531,7 @@ func TestLiveCopyEndpointsPublishPartialSnapshotWhileAssetIsActive(t *testing.T)
 	handler := NewServer(root).Handler()
 	destination := filepath.Join(base, "live-copy")
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/live-copies", strings.NewReader(`{"destination_root":"`+destination+`"}`)))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/live-copies", strings.NewReader(`{"destination_root":`+strconv.Quote(destination)+`}`)))
 	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"mode":"live_best_effort"`) {
 		t.Fatalf("live prepare endpoint failed: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -654,7 +655,7 @@ func TestWorkspaceRegistrySwitchesReadAndCatalogContextWithoutDeletingSources(t 
 	}
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/inventory", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), rootB) || !strings.Contains(recorder.Body.String(), "only-b.jsonl") || strings.Contains(recorder.Body.String(), "only-a.jsonl") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), strconv.Quote(rootB)) || !strings.Contains(recorder.Body.String(), "only-b.jsonl") || strings.Contains(recorder.Body.String(), "only-a.jsonl") {
 		t.Fatalf("inventory did not follow selected workspace: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
@@ -1549,7 +1550,7 @@ func TestMaintenancePreviewRemainsReadOnlyForDefaultDaemon(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	NewServer(root).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/maintenance/preview", strings.NewReader(`{"paths":["tmp/stale.tmp"]}`)))
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"read_only":true`) || !strings.Contains(recorder.Body.String(), "只允许生成计划") {
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"read_only":true`) || !(strings.Contains(recorder.Body.String(), "只允许生成计划") || runtime.GOOS == "windows" && strings.Contains(recorder.Body.String(), "文件状态不是 stable")) {
 		t.Fatalf("maintenance preview unexpectedly writable: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -1896,7 +1897,7 @@ func TestLocalArchiveRestoreUsesPreviewAndExecutionJournal(t *testing.T) {
 	options := &LifecycleOptions{Enabled: true, FixtureOnly: true, Descriptor: compat.SyntheticFixtureDescriptor(), ArchiveRoot: archiveRoot, JournalRoot: filepath.Join(t.TempDir(), "journal")}
 	handler := NewServerWithOptions(root, nil, options).Handler()
 	previewRecorder := httptest.NewRecorder()
-	previewBody := `{"archive_path":"` + created.Directory + `","target_root":"` + target + `"}`
+	previewBody := `{"archive_path":` + strconv.Quote(created.Directory) + `,"target_root":` + strconv.Quote(target) + `}`
 	handler.ServeHTTP(previewRecorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/local/restore/preview", strings.NewReader(previewBody)))
 	if previewRecorder.Code != http.StatusOK || !strings.Contains(previewRecorder.Body.String(), `"blocked":false`) {
 		t.Fatalf("unexpected local restore preview: status=%d body=%s", previewRecorder.Code, previewRecorder.Body.String())
@@ -2060,6 +2061,9 @@ func TestTrashDetectionEndpointIsReadOnly(t *testing.T) {
 }
 
 func TestTrashSettingsEndpointPersistsAndUsesCustomPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 使用原生 Shell 回收站，不支持自定义目录")
+	}
 	base := t.TempDir()
 	root := filepath.Join(base, "source")
 	custom := filepath.Join(base, "custom-trash", "Trash", "files")
@@ -2331,8 +2335,8 @@ func TestGitHubArchiveDownloadRequiresPreviewAndConfiguredRecoveryRoot(t *testin
 	recovery := &apiRemoteArchiveRecovery{}
 	handler := NewServerWithOptions("", nil, &LifecycleOptions{RemoteArchive: recovery, RemoteRecoveryRoot: recoveryRoot}).Handler()
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/github/archives/remote-001/download/preview", strings.NewReader(`{"destination":"`+filepath.Join(recoveryRoot, "downloads")+`"}`)))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"operation_id"`) || !strings.Contains(recorder.Body.String(), "downloads/remote-001") {
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/github/archives/remote-001/download/preview", strings.NewReader(`{"destination":`+strconv.Quote(filepath.Join(recoveryRoot, "downloads"))+`}`)))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"operation_id"`) || !strings.Contains(recorder.Body.String(), "remote-001") {
 		t.Fatalf("unexpected download preview: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var preview struct {
@@ -2347,7 +2351,7 @@ func TestGitHubArchiveDownloadRequiresPreviewAndConfiguredRecoveryRoot(t *testin
 		t.Fatalf("unexpected download execute: status=%d body=%s destination=%s", recorder.Code, recorder.Body.String(), recovery.destination)
 	}
 	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/github/archives/remote-001/download/preview", strings.NewReader(`{"destination":"`+filepath.Join(t.TempDir(), "outside")+`"}`)))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/github/archives/remote-001/download/preview", strings.NewReader(`{"destination":`+strconv.Quote(filepath.Join(t.TempDir(), "outside"))+`}`)))
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("outside recovery root was accepted: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -2378,7 +2382,7 @@ func TestRemoteArchiveRestoreReusesLocalRestoreCore(t *testing.T) {
 		RemoteArchive: provider, RemoteArchiveCatalog: provider,
 	}).Handler()
 
-	body := `{"target_root":"` + targetRoot + `"}`
+	body := `{"target_root":` + strconv.Quote(targetRoot) + `}`
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(body)))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"blocked":false`) || !strings.Contains(recorder.Body.String(), `"source_read_only":true`) || !strings.Contains(recorder.Body.String(), `"derived_write":true`) || !strings.Contains(recorder.Body.String(), "archive_path") {
@@ -2403,7 +2407,7 @@ func TestRemoteArchiveRestoreReusesLocalRestoreCore(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	blockedBody := `{"target_root":"` + sourceRoot + `"}`
+	blockedBody := `{"target_root":` + strconv.Quote(sourceRoot) + `}`
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(blockedBody)))
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("与当前扫描根重叠的远端恢复目标未被拒绝: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -2437,7 +2441,7 @@ func TestRemoteArchiveRestoreEncryptedFailuresCleanStaging(t *testing.T) {
 	server := NewServerWithOptions(sourceRoot, nil, options)
 	handler := server.Handler()
 	targetRoot := filepath.Join(t.TempDir(), "wrong-password-target")
-	body := `{"target_root":"` + targetRoot + `","archive_password":"错误密码"}`
+	body := `{"target_root":` + strconv.Quote(targetRoot) + `,"archive_password":"错误密码"}`
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(body)))
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "校验归档失败") {
@@ -2449,7 +2453,7 @@ func TestRemoteArchiveRestoreEncryptedFailuresCleanStaging(t *testing.T) {
 	if err := os.WriteFile(tamperedPath, []byte("tampered remote archive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	body = `{"target_root":"` + filepath.Join(t.TempDir(), "tampered-target") + `","archive_password":"正确密码"}`
+	body = `{"target_root":` + strconv.Quote(filepath.Join(t.TempDir(), "tampered-target")) + `,"archive_password":"正确密码"}`
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(body)))
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "校验归档失败") {
@@ -2464,7 +2468,7 @@ func TestRemoteArchiveRestoreEncryptedFailuresCleanStaging(t *testing.T) {
 	}
 	provider.sourceArchive = created.Directory
 	targetRoot = filepath.Join(t.TempDir(), "expired-target")
-	body = `{"target_root":"` + targetRoot + `","archive_password":"正确密码"}`
+	body = `{"target_root":` + strconv.Quote(targetRoot) + `,"archive_password":"正确密码"}`
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(body)))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"blocked":false`) {
@@ -2481,7 +2485,7 @@ func TestRemoteArchiveRestoreEncryptedFailuresCleanStaging(t *testing.T) {
 	server.remoteRestores[preview.RestoreOperationID].ExpiresAt = time.Now().Add(-time.Second)
 	server.remoteRestoreMu.Unlock()
 	targetRoot = filepath.Join(t.TempDir(), "restored")
-	body = `{"target_root":"` + targetRoot + `","archive_password":"正确密码"}`
+	body = `{"target_root":` + strconv.Quote(targetRoot) + `,"archive_password":"正确密码"}`
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/archives/remote-restore-001/restore/preview", strings.NewReader(body)))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"blocked":false`) {

@@ -56,7 +56,7 @@ func TestScannerSeparatesConversationsFromCodexSupportFiles(t *testing.T) {
 	for _, conversation := range report.Conversations {
 		seen[conversation.SourceID] = true
 	}
-	for _, id := range []string{"real", "archived", "imported", filepath.Join(root, "sessions", "damaged.jsonl")} {
+	for _, id := range []string{"real", "archived", "imported", filepath.ToSlash(filepath.Join(root, "sessions", "damaged.jsonl"))} {
 		if !seen[id] {
 			t.Fatalf("有效导入/归档或损坏对话被误隐藏: %s", id)
 		}

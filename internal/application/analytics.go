@@ -2,6 +2,7 @@
 package application
 
 import (
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -160,7 +161,7 @@ func AnalyticsModelName(value string) string {
 // AnalyticsProjectName 统一统计分组与精确下钻使用的项目路径，保留未知项。
 func AnalyticsProjectName(value string) string {
 	if value = strings.TrimSpace(value); value != "" {
-		return filepath.Clean(value)
+		return path.Clean(strings.ReplaceAll(value, `\`, "/"))
 	}
 	return "未知项目"
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestManagerPrepareExecuteAndVerify(t *testing.T) {
 	destination := filepath.Join(base, "nested", "copy")
 	writeCopyTestFile(t, filepath.Join(source, "rollout.jsonl"), `{"type":"session_meta"}`+"\n")
 	manager := NewManager()
-	initial := manager.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	initial := manager.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	if initial.Status != domain.TaskQueued || initial.Kind != "copy_prepare" {
 		t.Fatalf("unexpected initial task: %+v", initial)
 	}
@@ -133,7 +134,7 @@ func TestManagerAllowsOnlyOneConcurrentExecuteForPreparedPlan(t *testing.T) {
 	destination := filepath.Join(base, "copy")
 	writeCopyTestFile(t, filepath.Join(source, "rollout.jsonl"), "payload\n")
 	manager := NewManagerWithPlanRoot(planRoot)
-	prepared := manager.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	prepared := manager.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	waitCopyTask(t, manager, prepared.ID)
 	first, firstErr := manager.StartExecute(prepared.ID, ExecuteOptions{})
 	if firstErr != nil {
@@ -180,9 +181,9 @@ func TestManagerBindsPlansToWorkspaceAtTaskCreation(t *testing.T) {
 	planRootB := filepath.Join(base, "workspace-b", "plans")
 	writeCopyTestFile(t, filepath.Join(source, "rollout.jsonl"), "payload\n")
 	manager := NewManagerWithPlanRoot(planRootA)
-	first := manager.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: filepath.Join(base, "copy-a"), ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	first := manager.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: filepath.Join(base, "copy-a"), ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	manager.SetPlanRoot(planRootB)
-	second := manager.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: filepath.Join(base, "copy-b"), ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	second := manager.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: filepath.Join(base, "copy-b"), ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	waitCopyTask(t, manager, first.ID)
 	waitCopyTask(t, manager, second.ID)
 	if _, err := os.Stat(filepath.Join(planRootA, "copy-plan-"+first.ID+".json")); err != nil {

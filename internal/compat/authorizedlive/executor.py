@@ -1378,7 +1378,7 @@ def restore(work, plan, rows, journal, binary):
             if not matches:
                 try:
                     matches = [p for p in (pathlib.Path.home() / '.Trash').iterdir() if identical(p)]
-                except PermissionError:
+                except (PermissionError, FileNotFoundError):
                     matches = []
             require(len(matches) <= 1, '回收站 inode 证据有歧义')
             if matches:

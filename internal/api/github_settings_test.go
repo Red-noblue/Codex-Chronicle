@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +66,7 @@ func TestGitHubSettingsEndToEndWithSimulatedGitHub(t *testing.T) {
 	}
 	settings := GitHubSettings{ClientID: "client-test", OAuthBaseURL: remote.URL, APIBaseURL: remote.URL, ChunkMiB: 1}
 	githubSettingsRequest(t, handler, "PUT", "/api/v1/github/settings", settings, 200)
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("配置权限错误: %v %v", info, err)
 	}
 	connection := githubSettingsRequest(t, handler, "POST", "/api/v1/github/connection-test", nil, 200)

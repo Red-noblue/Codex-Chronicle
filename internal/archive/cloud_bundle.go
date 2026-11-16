@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"codex-chronicle.local/internal/domain"
+	"codex-chronicle.local/internal/durablefs"
 	"codex-chronicle.local/internal/lifecycle"
 	"github.com/klauspost/compress/zstd"
 )
@@ -270,12 +271,7 @@ func CopyCloudBundle(ctx context.Context, source, destination, password string) 
 	if err := os.Rename(staging, destination); err != nil {
 		return err
 	}
-	parent, err := os.Open(filepath.Dir(destination))
-	if err != nil {
-		return err
-	}
-	defer parent.Close()
-	return parent.Sync()
+	return durablefs.SyncDirectory(filepath.Dir(destination))
 }
 
 type cloudContextReader struct {

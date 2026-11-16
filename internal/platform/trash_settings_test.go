@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,12 @@ func TestTrashSettingsStoreRoundTripAndReset(t *testing.T) {
 	store, err := NewTrashSettingsStore(settingsPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		if err := store.Save(context.Background(), TrashSettings{CustomPath: custom}); err == nil {
+			t.Fatal("Windows 不应接受自定义回收站目录")
+		}
+		custom = ""
 	}
 	if err := store.Save(context.Background(), TrashSettings{CustomPath: custom}); err != nil {
 		t.Fatal(err)

@@ -17,6 +17,9 @@ import (
 
 func destinationTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("此测试验证 Unix 自定义回收站，Windows 使用原生 Shell provider")
+	}
 	base := t.TempDir()
 	root := filepath.Join(base, "source")
 	trash := filepath.Join(base, "Trash", "files")

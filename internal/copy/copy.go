@@ -19,6 +19,7 @@ import (
 
 	"codex-chronicle.local/internal/activity"
 	"codex-chronicle.local/internal/domain"
+	"codex-chronicle.local/internal/durablefs"
 	"codex-chronicle.local/internal/maintenance"
 	"codex-chronicle.local/internal/sqliteguard"
 )
@@ -601,7 +602,7 @@ func walkSource(ctx context.Context, root string, excluded []string, visit func(
 		if walkErr != nil {
 			return walkErr
 		}
-		info, err := entry.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
@@ -1223,16 +1224,7 @@ func createStaging(parent, base string) (string, error) {
 }
 
 func syncDirectory(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		// Windows 和部分网络文件系统不允许打开目录；文件级 Sync 仍已执行。
-		return nil
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("同步目录失败 %s：%w", path, err)
-	}
-	return nil
+	return durablefs.SyncDirectory(path)
 }
 
 func safeJoin(root, relative string) (string, error) {

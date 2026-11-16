@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +129,7 @@ func TestCleanupAPIRegisterRequiresFixtureModeAndPersistsManifest(t *testing.T) 
 	}
 	options := &LifecycleOptions{Enabled: true, FixtureOnly: true, Descriptor: compat.SyntheticFixtureDescriptor(), JournalRoot: filepath.Join(t.TempDir(), "journal"), CleanupRoot: registryRoot, CleanupOpenFileProbe: func(context.Context, string) (bool, bool, string) { return false, true, "测试探测成功" }}
 	handler := NewServerWithOptions(root, nil, options).Handler()
-	body := `{"manifest":{"kind":"staging","target_path":"` + target + `","owner":"api-test","source":"copy staging","rebuildable":true}}`
+	body := `{"manifest":{"kind":"staging","target_path":` + strconv.Quote(target) + `,"owner":"api-test","source":"copy staging","rebuildable":true}}`
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/cleanup/register", strings.NewReader(body)))
 	if recorder.Code != http.StatusCreated {

@@ -19,6 +19,7 @@ import (
 
 	"codex-chronicle.local/internal/compat/authorizedlive"
 	"codex-chronicle.local/internal/domain"
+	"codex-chronicle.local/internal/durablefs"
 	"codex-chronicle.local/internal/lifecycle"
 	"codex-chronicle.local/internal/operation"
 	"codex-chronicle.local/internal/platform"
@@ -596,12 +597,7 @@ func (s *Server) saveExecutionTask(task *executionTask) error {
 	if err := os.Rename(file.Name(), filepath.Join(root, task.ID+".json")); err != nil {
 		return err
 	}
-	directory, err := os.Open(root)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return durablefs.SyncDirectory(root)
 }
 
 // prepareExecutionDirectory 逐级同步新建目录；拒绝输出根经符号链接落入任何 .codex。
@@ -626,12 +622,7 @@ func prepareExecutionDirectory(path string) error {
 		if err := os.Mkdir(missing[index], 0o700); err != nil && !os.IsExist(err) {
 			return err
 		}
-		parent, err := os.Open(filepath.Dir(missing[index]))
-		if err != nil {
-			return err
-		}
-		err = parent.Sync()
-		_ = parent.Close()
+		err = durablefs.SyncDirectory(filepath.Dir(missing[index]))
 		if err != nil {
 			return err
 		}

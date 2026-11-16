@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestPrepareAndExecutePublishesVerifiedCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := Prepare(context.Background(), CopyRequest{
+	plan, err := Prepare(context.Background(), CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows",
 		SourceRoot: source, DestinationRoot: destination,
 		ActivityOptions: &activity.Options{
 			Interval:            time.Millisecond,
@@ -412,7 +413,7 @@ func TestVerifyDestinationRejectsChangedFile(t *testing.T) {
 	}
 	path := filepath.Join(source, "rollout.jsonl")
 	writeCopyTestFile(t, path, "payload")
-	plan, err := Prepare(context.Background(), CopyRequest{SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	plan, err := Prepare(context.Background(), CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
