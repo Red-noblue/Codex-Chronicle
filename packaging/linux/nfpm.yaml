@@ -16,8 +16,10 @@ contents:
   - src: ${CHRONICLE_PAYLOAD}/
     dst: /usr/lib/codex-chronicle/
     type: tree
+    expand: true
   - src: ${CHRONICLE_PAYLOAD}/licenses/
     dst: /usr/share/doc/codex-chronicle/
     type: tree
+    expand: true
   - src: packaging/linux/codex-chronicle.desktop
     dst: /usr/share/applications/codex-chronicle.desktop
