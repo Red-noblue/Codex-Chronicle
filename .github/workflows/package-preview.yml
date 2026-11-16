@@ -124,8 +124,8 @@ jobs:
         shell: bash
         run: |
           export CHRONICLE_PAYLOAD="$GITHUB_WORKSPACE/dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/payload"
-          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager deb --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/"
-          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/"
+          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager deb --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/Codex-Chronicle-$CHRONICLE_VERSION-linux-$CHRONICLE_ARCH.deb"
+          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4 package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH/Codex-Chronicle-$CHRONICLE_VERSION-linux-$CHRONICLE_ARCH.rpm"
       - name: 校验 Linux 安装包解包内容与启动
         if: matrix.os == 'linux'
         shell: bash
