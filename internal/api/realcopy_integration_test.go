@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -136,7 +137,7 @@ func TestRealCopyLifecycleThroughHTTPAPI(t *testing.T) {
 	}
 
 	archiveDirectory := executeResponse.Result.Archive.Directory
-	previewBody := `{"archive_path":"` + archiveDirectory + `","target_root":"` + root + `","source_operation_id":"` + executeResponse.Result.OperationID + `"}`
+	previewBody := `{"archive_path":` + strconv.Quote(archiveDirectory) + `,"target_root":` + strconv.Quote(root) + `,"source_operation_id":"` + executeResponse.Result.OperationID + `"}`
 	restorePreview := apiJSON(t, handler, http.MethodPost, "/api/v1/archives/local/restore/preview", previewBody)
 	if restorePreview.Code != http.StatusOK || !strings.Contains(restorePreview.Body.String(), `"blocked":false`) {
 		t.Fatalf("真实副本 API 恢复预览失败: status=%d body=%s", restorePreview.Code, restorePreview.Body.String())

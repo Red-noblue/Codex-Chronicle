@@ -321,13 +321,27 @@ func TestProbeObservesForcedWriterTerminationWithoutRepairingSource(t *testing.T
 		_ = command.Process.Kill()
 		_ = command.Wait()
 	}()
-	time.Sleep(20 * time.Millisecond)
+	// 等待子进程真正开始追加，避免 Windows 启动耗时超过探测窗口。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() > int64(len(`{"type":"initial"}`+"\n")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("writer 子进程未及时开始追加")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	report, err := Probe(context.Background(), root, []Target{{RelativePath: "writer.jsonl", Kind: domain.AssetKindJSONL}}, Options{
-		Interval: 30 * time.Millisecond, DisableProcessProbe: true, Conservative: false,
+		Interval: 100 * time.Millisecond, DisableProcessProbe: true, Conservative: false,
 	})
 	if err != nil {
 		t.Fatal(err)

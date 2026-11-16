@@ -255,7 +255,7 @@ func CopyCloudBundle(ctx context.Context, source, destination, password string) 
 		if err := copyAndVerify(ctx, from, to, lifecycle.AssetFingerprint{RelativePath: relative, SHA256: hash}); err != nil {
 			return err
 		}
-		file, err := os.Open(to)
+		file, err := os.OpenFile(to, os.O_WRONLY, 0)
 		if err != nil {
 			return err
 		}

@@ -94,8 +94,9 @@ func TestPrepareAndExecuteHonorsExplicitExclusions(t *testing.T) {
 
 	plan, err := Prepare(context.Background(), CopyRequest{
 		SourceRoot: source, DestinationRoot: destination,
-		ExcludePaths:    []string{"auth.json", "backups"},
-		ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}},
+		ExcludePaths:                 []string{"auth.json", "backups"},
+		AllowUnavailableProcessProbe: runtime.GOOS == "windows",
+		ActivityOptions:              &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}},
 	})
 	if err != nil {
 		t.Fatalf("Prepare failed: %v", err)
@@ -324,7 +325,8 @@ func TestPrepareSkipsKnownRuntimeSymlinks(t *testing.T) {
 
 	plan, err := Prepare(context.Background(), CopyRequest{
 		SourceRoot: source, DestinationRoot: destination,
-		ActivityOptions: &activity.Options{Interval: time.Millisecond, DisableProcessProbe: false, ProcessDetector: stableProcessDetector{}},
+		ActivityOptions:              &activity.Options{Interval: time.Millisecond, DisableProcessProbe: false, ProcessDetector: stableProcessDetector{}},
+		AllowUnavailableProcessProbe: runtime.GOOS == "windows",
 	})
 	if err != nil {
 		t.Fatalf("known runtime symlink should be excluded: %v", err)

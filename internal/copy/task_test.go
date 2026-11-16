@@ -54,7 +54,7 @@ func TestManagerPersistsPlanOutsideTaskMemory(t *testing.T) {
 	destination := filepath.Join(base, "copy")
 	writeCopyTestFile(t, filepath.Join(source, "rollout.jsonl"), `{"type":"session_meta"}`+"\n")
 	manager := NewManagerWithPlanRoot(planRoot)
-	initial := manager.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	initial := manager.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	prepared := waitCopyTask(t, manager, initial.ID)
 	if prepared.Status != domain.TaskCompleted || prepared.Plan == nil {
 		t.Fatalf("persisted plan preparation failed: %+v", prepared)
@@ -90,7 +90,7 @@ func TestManagerRestoresPersistedPlanAfterRestart(t *testing.T) {
 	destination := filepath.Join(base, "copy-after-restart")
 	writeCopyTestFile(t, filepath.Join(source, "rollout.jsonl"), `{"type":"session_meta"}`+"\n")
 	first := NewManagerWithPlanRoot(planRoot)
-	initial := first.StartPrepare(CopyRequest{SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
+	initial := first.StartPrepare(CopyRequest{AllowUnavailableProcessProbe: runtime.GOOS == "windows", SourceRoot: source, DestinationRoot: destination, ActivityOptions: &activity.Options{Interval: time.Millisecond, ProcessDetector: stableProcessDetector{}}})
 	prepared := waitCopyTask(t, first, initial.ID)
 	if prepared.Status != domain.TaskCompleted || prepared.Plan == nil {
 		t.Fatalf("首次 prepare 失败：%+v", prepared)
