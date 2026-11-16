@@ -131,13 +131,13 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq rpm2cpio cpio
+          sudo apt-get install -y -qq libarchive-tools
           chronicle_extract="$(mktemp -d)"
           trap 'rm -rf "$chronicle_extract"' EXIT
           chronicle_packages="$GITHUB_WORKSPACE/dist/$CHRONICLE_VERSION/linux-$CHRONICLE_ARCH"
           mkdir "$chronicle_extract/deb" "$chronicle_extract/rpm"
           dpkg-deb -x "$chronicle_packages/"*.deb "$chronicle_extract/deb"
-          (cd "$chronicle_extract/rpm" && rpm2cpio "$chronicle_packages/"*.rpm | cpio -idm --quiet --no-absolute-filenames)
+          bsdtar --no-same-owner -xf "$chronicle_packages/"*.rpm -C "$chronicle_extract/rpm" -s ',^/,,'
           for chronicle_format in deb rpm; do
             python3 scripts/verify-linux-package.py "$chronicle_extract/$chronicle_format/usr/lib/codex-chronicle" "$CHRONICLE_VERSION" "$CHRONICLE_ARCH"
           done
