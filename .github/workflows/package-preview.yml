@@ -285,7 +285,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/chronicle-release.json"
+          chronicle_release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)"
+          [[ "$chronicle_release_id" =~ ^[1-9][0-9]*$ ]] || { echo '无法取得草稿 Release ID，拒绝公开' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/releases/$chronicle_release_id" > "$RUNNER_TEMP/chronicle-release.json"
           python3 scripts/release-feed.py verify-upload "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --release-json "$RUNNER_TEMP/chronicle-release.json"
       - name: 公开版本并设置渠道
         env:
