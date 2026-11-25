@@ -13,6 +13,8 @@ on:
         type: string
 permissions:
   contents: read
+env:
+  PYTHONUTF8: '1'
 jobs:
   test:
     name: 回归 / ${{ matrix.runner }}
@@ -39,7 +41,7 @@ jobs:
         run: python scripts/test-release-feed.py
       - name: Linux 桌面协议与原生窗口依赖
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y dbus-x11 zenity xvfb xauth xdotool desktop-file-utils
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 zenity xvfb xauth xdotool desktop-file-utils at-spi2-core python3-pyatspi
       - name: Go 回归与静态检查
         shell: bash
         run: |
@@ -73,7 +75,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           dbus-run-session -- go test -race -count=1 ./internal/desktopui/linuxtray
-          dbus-run-session -- xvfb-run -a python3 scripts/test-linux-desktop.py --launcher .local/port-check/bin/codex-chronicle-desktop
+          dbus-run-session -- xvfb-run -a /usr/bin/python3 scripts/test-linux-desktop.py --launcher .local/port-check/bin/codex-chronicle-desktop
           desktop-file-validate packaging/linux/codex-chronicle.desktop
   release-config:
     name: 确定版本与更新渠道
