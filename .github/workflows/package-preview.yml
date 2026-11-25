@@ -167,8 +167,8 @@ jobs:
           go run ./cmd/codex-chronicle-release key-info --output "$CHRONICLE_SIGNING_PRIVATE_KEY_FILE" > "$RUNNER_TEMP/chronicle-key-info.json"
           python3 - <<'PY'
           import json, os, pathlib
-          info = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'chronicle-key-info.json').read_text())
-          public_keys = [line.strip() for line in pathlib.Path('packaging/update-signing.pub').read_text().splitlines() if line.strip() and not line.lstrip().startswith('#')]
+          info = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'chronicle-key-info.json').read_text(encoding='utf-8'))
+          public_keys = [line.strip() for line in pathlib.Path('packaging/update-signing.pub').read_text(encoding='utf-8').splitlines() if line.strip() and not line.lstrip().startswith('#')]
           if public_keys != [info['public_key']] or info['key_id'] != os.environ['CHRONICLE_SIGNING_KEY_ID']:
               raise SystemExit('发布私钥、Key ID 与仓库固定公钥不一致，停止构建')
           print('更新签名身份核验通过：' + info['key_id'])

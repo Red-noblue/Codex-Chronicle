@@ -21,8 +21,7 @@ import (
 )
 
 func TestSearchContinuesInSourceWhenIndexClearsDuringVerification(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	root := t.TempDir()
 	paths := []string{"rollout-a.jsonl", "rollout-b.jsonl"}
 	for _, path := range paths {
@@ -43,13 +42,16 @@ func TestSearchContinuesInSourceWhenIndexClearsDuringVerification(t *testing.T) 
 			t.Fatal(err)
 		}
 		n := 0
-		got, err := s.SearchWithFilesFiltered(ctx, root, query, 175, report.Files, func(hit domain.SearchHit) (domain.SearchHit, bool, error) {
+		// 只限制可能互锁的搜索与清理，不让测试数据构建消耗超时预算。
+		searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		got, err := s.SearchWithFilesFiltered(searchCtx, root, query, 175, report.Files, func(hit domain.SearchHit) (domain.SearchHit, bool, error) {
 			n++
 			if n == 1 {
-				return hit, true, s.ClearSearchIndex(ctx)
+				return hit, true, s.ClearSearchIndex(searchCtx)
 			}
 			return hit, true, nil
 		})
+		cancel()
 		if err != nil || len(got) != len(want) {
 			t.Fatalf("搜索持有数据库连接，或清理后未继续搜索：%q %d/%d %v", query, len(got), len(want), err)
 		}

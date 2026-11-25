@@ -1331,6 +1331,17 @@ func TestOnlineUpdateAPIChecksDownloadsAndPreparesPlan(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/update/status", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"online_proxy_url":"http://127.0.0.1:7890"`) {
+		t.Fatalf("invalid input changed saved update proxy: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/api/v1/update/proxy", strings.NewReader(`{"proxy_url":""}`)))
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "127.0.0.1:7890") {
+		t.Fatalf("online update proxy clear failed: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/update/check", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"version":"3.0.0"`) {
 		t.Fatalf("online update check failed: status=%d body=%s", recorder.Code, recorder.Body.String())
