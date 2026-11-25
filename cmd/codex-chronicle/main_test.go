@@ -2,6 +2,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +11,31 @@ import (
 
 	"codex-chronicle.local/internal/api"
 )
+
+func TestListenOccupiedAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	address := listener.Addr().String()
+	if actual, err := listen(address, false); err == nil || actual != nil || !strings.Contains(err.Error(), "显式指定的端口不会自动切换") {
+		t.Fatalf("显式端口冲突应明确报错：%v", err)
+	}
+	actual, err := listen(address, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer actual.Close()
+	if actual.Addr().String() == address || actual.Addr().(*net.TCPAddr).IP.String() != "127.0.0.1" {
+		t.Fatalf("自动模式没有避让到本机空闲端口：%s", actual.Addr())
+	}
+	// 自动绑定的端口必须始终被当前 listener 持有，不能先探测后释放。
+	if other, err := net.Listen("tcp", actual.Addr().String()); err == nil {
+		other.Close()
+		t.Fatal("空闲端口未被持续持有")
+	}
+}
 
 func TestHealthHandler(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)

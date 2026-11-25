@@ -148,6 +148,11 @@ func (s *Server) buildBatchOperationPlans(ctx context.Context, request batchOper
 	if strings.TrimSpace(root) == "" {
 		return batchOperationResponse{}, fmt.Errorf("尚未配置只读扫描根目录")
 	}
+	if request.Trash || request.PermanentDelete {
+		if err := s.requireSourceChanges(root); err != nil {
+			return batchOperationResponse{}, err
+		}
+	}
 	report, err := s.scanner.Scan(ctx, root)
 	if err != nil {
 		return batchOperationResponse{}, err

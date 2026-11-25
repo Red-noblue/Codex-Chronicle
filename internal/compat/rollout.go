@@ -41,6 +41,7 @@ func AnalyzeRolloutPath(path string) (domain.RolloutSummary, domain.JSONLScanSum
 // 它不会保存正文；正文仍应通过原始文件的字节范围接口读取。
 func AnalyzeRollout(reader io.Reader, fallbackSource string) (domain.RolloutSummary, domain.JSONLScanSummary, error) {
 	projection := domain.RolloutSummary{Status: domain.StatusStable}
+	sessionMetaSeen := false
 	turns := make(map[string]struct{})
 	userMessageSeen := make(map[string]struct{})
 	assistantMessageSeen := make(map[string]struct{})
@@ -76,6 +77,13 @@ func AnalyzeRollout(reader io.Reader, fallbackSource string) (domain.RolloutSumm
 		payload := rawObject(record["payload"])
 		topType := rawString(record["type"])
 		payloadType := rawString(payload["type"])
+		if topType == "session_meta" {
+			// fork 会把祖先的 session_meta 一并复制；首条才是本文件的身份，不能被继承历史覆盖。
+			if sessionMetaSeen {
+				return nil
+			}
+			sessionMetaSeen = true
+		}
 		if payloadType == "thread_rolled_back" || topType == "session_meta" && (len(payload["history_base"]) > 0 || rawString(payload["history_mode"]) == "standalone") {
 			projection.HistoryEdited = true
 		}

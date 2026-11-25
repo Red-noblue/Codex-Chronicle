@@ -4,6 +4,9 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"flag"
@@ -38,6 +41,16 @@ type releaseOptions struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "keygen" || os.Args[1] == "key-info") {
+		info, err := signingKeyCommand(os.Args[1], os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(info); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	options := releaseOptions{}
 	flag.StringVar(&options.Version, "version", "", "发布版本，例如 1.0.0")
 	flag.StringVar(&options.BuildID, "build-id", "", "构建标识（可选）")
@@ -136,6 +149,25 @@ func buildReleaseArchive(ctx context.Context, options releaseOptions) error {
 		manifest, err = updatepkg.SignManifest(manifest, privateKey, options.SigningKeyID)
 		if err != nil {
 			return fmt.Errorf("签名发布 manifest 失败：%w", err)
+		}
+		publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+		if !ok {
+			return errors.New("无法从发布签名私钥取得公钥")
+		}
+		if err := os.MkdirAll(filepath.Join(stage, "update"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(stage, "update", "trusted-public-key"), []byte(base64.StdEncoding.EncodeToString(publicKey)+"\n"), 0o644); err != nil {
+			return fmt.Errorf("写入更新信任公钥失败：%w", err)
+		}
+		// 公钥属于发布载荷，必须在写入 manifest 前加入清单摘要。
+		manifest, err = updatepkg.BuildManifestForPlatform(ctx, stage, options.Version, options.BuildID, options.TargetOS, options.TargetArch)
+		if err != nil {
+			return fmt.Errorf("重新生成签名载荷 manifest 失败：%w", err)
+		}
+		manifest, err = updatepkg.SignManifest(manifest, privateKey, options.SigningKeyID)
+		if err != nil {
+			return fmt.Errorf("重新签名发布 manifest 失败：%w", err)
 		}
 	}
 	if err := updatepkg.WriteManifest(ctx, stage, manifest); err != nil {

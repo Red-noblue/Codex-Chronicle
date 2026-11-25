@@ -10,7 +10,8 @@ import (
 	"time"
 )
 
-const maxProjectionBytes = 16 << 20
+const maxProjectionCacheBytes = 16 << 20
+const maxProjectionMemoryBytes = 32 << 20
 
 type ProjectionCache interface {
 	LoadReaderProjection(context.Context, string, string) ([]byte, error)
@@ -91,7 +92,7 @@ func (m *Manager) job(plan Plan, cache ProjectionCache) *projectionJob {
 		}
 		defer func() { <-m.gate }()
 		if cache != nil {
-			if b, err := cache.LoadReaderProjection(ctx, ScopeKey(plan), Stamp(plan)); err == nil && len(b) > 0 && len(b) <= maxProjectionBytes {
+			if b, err := cache.LoadReaderProjection(ctx, ScopeKey(plan), Stamp(plan)); err == nil && len(b) > 0 && len(b) <= maxProjectionCacheBytes {
 				var p Projection
 				if json.Unmarshal(b, &p) == nil && p.validFor(plan) && ctx.Err() == nil {
 					p.initialize()
@@ -107,9 +108,9 @@ func (m *Manager) job(plan Plan, cache ProjectionCache) *projectionJob {
 		job.value, job.err = BuildProjection(ctx, plan, &job.progress)
 		if job.err == nil {
 			b, err := json.Marshal(job.value)
-			if err != nil || len(b) > maxProjectionBytes {
+			if err != nil || len(b) > maxProjectionMemoryBytes {
 				job.value = nil
-				job.err = fmt.Errorf("导航元数据超过 16 MiB 上限，未发布部分投影")
+				job.err = fmt.Errorf("导航元数据超过 32 MiB 上限，未发布部分投影")
 			} else {
 				job.size = len(b)
 				if err := job.save(ctx, plan, cache); err != nil {
@@ -141,7 +142,7 @@ func (m *Manager) trim() {
 		}
 		select {
 		case <-job.done:
-			if len(m.jobs) > 8 || bytes > 32<<20 {
+			if len(m.jobs) > 8 || bytes > maxProjectionMemoryBytes {
 				job.cancel()
 				delete(m.jobs, key)
 				bytes -= job.size
@@ -156,7 +157,8 @@ func (m *Manager) trim() {
 
 // save 允许库存先创建内存投影，后续阅读请求再补写磁盘；失效时取消尚在进行的保存。
 func (job *projectionJob) save(ctx context.Context, plan Plan, cache ProjectionCache) (err error) {
-	if cache == nil || job.value == nil || job.err != nil {
+	// 超过单份磁盘缓存上限时，内存中的完整导航仍能用于搜索和分页。
+	if cache == nil || job.value == nil || job.err != nil || job.size > maxProjectionCacheBytes {
 		return nil
 	}
 	job.persist.Do(func() {

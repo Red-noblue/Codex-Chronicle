@@ -82,7 +82,8 @@ func TestCapabilitiesAreReadOnly(t *testing.T) {
 	var response struct {
 		ReadOnly                  bool `json:"read_only"`
 		RealConversationExecution struct {
-			DaemonVersions []string `json:"daemon_versions"`
+			DaemonCompatibility string `json:"daemon_compatibility"`
+			RequiresKnownSchema bool   `json:"requires_known_schema"`
 		} `json:"real_conversation_execution"`
 		Adapter struct {
 			Capabilities map[string]bool `json:"capabilities"`
@@ -94,8 +95,8 @@ func TestCapabilitiesAreReadOnly(t *testing.T) {
 	if !response.ReadOnly {
 		t.Fatal("capabilities endpoint must be read-only")
 	}
-	if strings.Join(response.RealConversationExecution.DaemonVersions, ",") != "0.166.0,0.167.0,0.167.2,0.169.0" {
-		t.Fatalf("capabilities endpoint must advertise only reviewed daemon versions: %+v", response.RealConversationExecution.DaemonVersions)
+	if execution := response.RealConversationExecution; execution.DaemonCompatibility != "protocol_checked" || !execution.RequiresKnownSchema {
+		t.Fatalf("预期按协议核对 daemon，且仍要求已知数据库结构：%+v", execution)
 	}
 	for _, capability := range []string{"repair", "archive_export", "delete", "restore", "rebuild_index"} {
 		if response.Adapter.Capabilities[capability] {
@@ -1319,6 +1320,17 @@ func TestOnlineUpdateAPIChecksDownloadsAndPreparesPlan(t *testing.T) {
 	handler := serverWithUpdate.Handler()
 
 	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/api/v1/update/proxy", strings.NewReader(`{"proxy_url":"http://127.0.0.1:7890"}`)))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"online_proxy_url":"http://127.0.0.1:7890"`) {
+		t.Fatalf("online update proxy save failed: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/api/v1/update/proxy", strings.NewReader(`{"proxy_url":"ftp://127.0.0.1:7890"}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid update proxy was accepted: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/update/check", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"version":"3.0.0"`) {
 		t.Fatalf("online update check failed: status=%d body=%s", recorder.Code, recorder.Body.String())

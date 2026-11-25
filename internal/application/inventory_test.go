@@ -466,6 +466,59 @@ func TestScannerMergesSQLiteThreadProjectionAndMissingRolloutDiagnostic(t *testi
 	}
 }
 
+func TestScannerKeepsForkAndAncestorAssetsSeparate(t *testing.T) {
+	for _, keepAncestor := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ancestor_present=%t", keepAncestor), func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "sessions"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fork := "sessions/fork.jsonl"
+			ancestor := "sessions/ancestor.jsonl"
+			data := `{"type":"session_meta","payload":{"id":"current-fork","forked_from_id":"ancestor","source":"cli"}}
+{"type":"session_meta","payload":{"id":"ancestor","source":"cli"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"相同的历史提问"}}
+`
+			if err := os.WriteFile(filepath.Join(root, fork), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			database, err := sql.Open("sqlite", filepath.Join(root, "state_5.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { database.Close() })
+			if _, err := database.Exec(`CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT);
+				INSERT INTO threads VALUES('current-fork','sessions/fork.jsonl','相同的历史提问');`); err != nil {
+				t.Fatal(err)
+			}
+			wantPaths := map[string]string{"current-fork": fork}
+			if keepAncestor {
+				writeTestRollout(t, filepath.Join(root, ancestor), "ancestor", "相同的历史提问")
+				if _, err := database.Exec(`INSERT INTO threads VALUES('ancestor','sessions/ancestor.jsonl','相同的历史提问')`); err != nil {
+					t.Fatal(err)
+				}
+				wantPaths["ancestor"] = ancestor
+			}
+			scanner := NewScanner()
+			for pass := 0; pass < 2; pass++ {
+				report, err := scanner.Scan(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(report.Conversations) != len(wantPaths) {
+					t.Fatalf("fork 历史复活了不存在的祖先: %+v", report.Conversations)
+				}
+				for _, conversation := range report.Conversations {
+					want, exists := wantPaths[conversation.SourceID]
+					if !exists || len(conversation.RolloutPaths) != 1 || conversation.RolloutPaths[0] != want || conversation.ThreadKind == "subagent" || conversation.DescendantCount != 0 {
+						t.Fatalf("fork 与祖先共享或混用了资产范围: %+v", conversation)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestInventoryCanSkipAssetGraphConstruction(t *testing.T) {
 	root := t.TempDir()
 	content := `{"type":"session_meta","payload":{"id":"graph-optional-thread"}}

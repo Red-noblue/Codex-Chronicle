@@ -3,6 +3,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { Archive, ArrowDownToLine, Check, ChevronRight, CircleAlert, Cloud, HardDrive, LoaderCircle, RefreshCw, Search, ShieldCheck, Trash2, X } from '@lucide/svelte';
   import LibraryDrawer from '../sessions/LibraryDrawer.svelte';
+  import HelpBubble from '../HelpBubble.svelte';
   import type { ArchiveCatalogItem, ArchiveManagementPreview, ArchiveTask } from './types';
 
   export let request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -24,8 +25,12 @@
   let busy = false;
   let message = '';
   let catalogError = '';
+  let catalogIssues: string[] = [];
+  let refreshing = false;
   let remoteTarget = '';
   let remoteError = '';
+  let remoteStale = false;
+  let remoteCheckedAt = '';
   let localRoot = '';
   let activeTaskID = '';
   let searchQuery = '';
@@ -77,34 +82,39 @@
   $: requiresCode = Boolean(preview?.code);
   $: canConfirm = Boolean(preview && !busy && (!requiresCode || confirmation.trim() === preview.code) && !['conflict', 'partial'].includes(preview.restore?.status || '') && (preview.restore?.status !== 'recovery_required' || recoverUpdate));
 
-  onMount(() => { void load(); pollTimer = setInterval(() => { if (!busy) void load(); }, 4000); });
-  onDestroy(() => clearInterval(pollTimer));
+  onMount(() => { void load(); pollTimer = setInterval(() => { if (!busy && !refreshing) void load(); }, 4000); });
+  onDestroy(() => { clearInterval(pollTimer); ++requestGeneration; });
   $: if (dialog) {
     if (activeTask && !dialog.open) dialog.showModal();
     else if (!activeTask && dialog.open) dialog.close();
   }
 
-  async function load() {
+  async function load(force = false) {
+    if (refreshing) return;
     const generation = ++requestGeneration;
+    refreshing = true;
     loading = items.length === 0;
     catalogError = '';
     try {
-      const response = await request('/api/v1/archive-center');
-      const body = await response.json() as { items?: ArchiveCatalogItem[]; local_root?: string; remote_target?: string; remote_error?: string; active?: string; error?: string };
+      const response = await request(`/api/v1/archive-center${force ? '?refresh=1' : ''}`);
+      const body = await response.json() as { items?: ArchiveCatalogItem[]; local_root?: string; remote_target?: string; remote_error?: string; remote_stale?: boolean; remote_checked_at?: string; catalog_errors?: string[]; active?: string; error?: string };
       if (generation !== requestGeneration) return;
       if (!response.ok) throw new Error(body.error || '读取归档失败');
       items = body.items || [];
       localRoot = body.local_root || '';
       remoteTarget = body.remote_target || '';
       remoteError = body.remote_error || '';
+      remoteStale = !!body.remote_stale;
+      remoteCheckedAt = body.remote_checked_at && !body.remote_checked_at.startsWith('0001-') ? body.remote_checked_at : '';
+      catalogIssues = body.catalog_errors || [];
       activeTaskID = body.active || '';
     } catch (error) {
       if (generation === requestGeneration) catalogError = error instanceof Error ? error.message : '读取归档失败';
-    } finally { if (generation === requestGeneration) loading = false; }
+    } finally { if (generation === requestGeneration) { loading = false; refreshing = false; } }
   }
 
   function archiveTitle(task: ArchiveTask) {
-    return task.titles?.filter(Boolean).join('、') || `${task.source_ids.length} 个对话`;
+    return task.titles?.filter(Boolean).join('、') || (task.source_ids.length ? `${task.source_ids.length} 个对话` : `归档 ${task.archive_id}`);
   }
 
   function archiveIDs(task: ArchiveTask) {
@@ -143,6 +153,7 @@
 
   function needsAttention(item: ArchiveCatalogItem) {
     return Boolean(item.task.error || item.task.management_error || item.task.management_state === 'needs_review' ||
+      item.manageable === false && !item.discovered ||
       ['failed', 'interrupted'].includes(item.task.state) ||
       ['conflict', 'partial', 'needs_review'].includes(item.task.restore_status || '') ||
       Object.values(item.task.restore_checks || {}).some(check => ['conflict', 'partial', 'needs_review'].includes(check?.status || '')) ||
@@ -153,6 +164,8 @@
     const task = item.task;
     if (task.management_state === 'running') return `${actionLabel(task.management_action || '归档操作')}中`;
     if (needsAttention(item)) return !item.local_available && !item.remote_available ? '无可用副本' : '需复核';
+    if (item.remote_stale) return '云端待核验';
+    if (item.discovered) return '仅供查看';
     if (task.restore_status === 'already_present') return '最近核验内容一致';
     if (isRestored(task)) return '有恢复记录';
     if (task.management_state === 'completed') return '操作已完成';
@@ -160,7 +173,8 @@
   }
 
   function taskStatusClass(item: ArchiveCatalogItem) {
-    if (needsAttention(item)) return 'needs_review';
+    if (needsAttention(item) || item.remote_stale) return 'needs_review';
+    if (item.discovered) return 'plan-prepared';
     if (item.task.management_state === 'running' || item.task.state !== 'completed') return 'active_writing';
     return 'stable';
   }
@@ -171,6 +185,7 @@
   }
 
   function openAction(item: ArchiveCatalogItem, action: string, source: 'local' | 'remote' = 'local') {
+    if (item.manageable === false) return;
     activeTask = item.task;
     selectedAction = action;
     if (action === 'restore') {
@@ -282,23 +297,30 @@
 <main class="archives-page">
   <header class="archives-heading">
     <div><div class="archives-title"><Archive aria-hidden="true" /><h1>归档中心</h1></div><p>管理已保存的 Codex 对话副本</p></div>
-    <div class="archives-actions"><button type="button" class="secondary-button" on:click={onSettings}>存储设置</button><button type="button" class="archive-icon-button" aria-label="刷新归档" title="刷新归档" on:click={load} disabled={loading || busy}><RefreshCw aria-hidden="true" /></button></div>
+    <div class="archives-actions"><button type="button" class="secondary-button" on:click={onSettings}>存储设置</button><button type="button" class="archive-icon-button" aria-label="重新扫描归档位置" title="重新扫描归档位置" on:click={() => load(true)} disabled={refreshing || busy}><RefreshCw class={refreshing ? 'archive-loading' : ''} aria-hidden="true" /></button></div>
   </header>
 
   <section class="archive-location-strip" aria-label="归档位置">
     <div class="archive-location-entry"><HardDrive aria-hidden="true" /><div><strong>本地</strong><span title={localRoot}>{localRoot || '未配置归档目录'}</span></div></div>
-    <div class="archive-location-entry"><Cloud aria-hidden="true" /><div><strong>云端</strong><span title={remoteTarget}>{remoteTarget || (remoteError ? '未连接' : '未选择仓库')}</span></div>{#if remoteError}<span class="archive-location-warning" title={remoteError}>需要设置</span>{/if}</div>
+    <div class="archive-location-entry"><Cloud aria-hidden="true" /><div><strong>云端</strong><span title={remoteTarget}>{remoteTarget || (remoteError ? '未连接' : '未选择仓库')}</span></div>{#if remoteError}<span class="archive-location-warning" title={remoteError}>{remoteTarget ? '暂未核验' : '需要设置'}</span>{/if}</div>
   </section>
 
   <section class="archive-overview" aria-label="归档统计">
     <div><strong>{filterCounts.all}</strong><span>归档记录</span></div>
     <div><strong>{filterCounts.paired}</strong><span>双副本</span></div>
     <div><strong>{filterCounts.local}</strong><span>含本地副本</span></div>
-    <div><strong>{filterCounts.remote}</strong><span>含云端副本</span></div>
+    <div><strong>{remoteStale && !remoteCheckedAt ? '—' : filterCounts.remote}</strong><span>含云端副本</span></div>
     <div><strong>{filterCounts.attention}</strong><span>需复核</span></div>
   </section>
 
-  {#if activeArchiveTask && activeCatalogItem}<div class="archive-task-banner" role="status"><LoaderCircle aria-hidden="true" /><span><strong>{archiveTitle(activeArchiveTask)}</strong> · {taskStatus(activeCatalogItem)}</span><button type="button" class="text-action" on:click={load}>刷新状态</button></div>{/if}
+  {#if remoteStale || catalogIssues.length}
+    <div class="archive-catalog-notices">
+      {#if remoteStale}<div class="archive-catalog-status" role="status"><CircleAlert size={14} aria-hidden="true" /><span>{remoteCheckedAt ? `云端暂未核验，保留上次清单 · ${formatTime(remoteCheckedAt)}` : '云端暂未核验，数量待确认'}</span><HelpBubble id="archive-remote-status" label="云端清单状态说明" text={`${remoteError}。清单只表示发现了副本，不代表已下载并验证全部内容；执行前仍会重新校验。`} /></div>{/if}
+      {#if catalogIssues.length}<details class="archive-catalog-issues"><summary>清单读取提示（{catalogIssues.length}）</summary><ul>{#each catalogIssues as issue}<li>{issue}</li>{/each}</ul></details>{/if}
+    </div>
+  {/if}
+
+  {#if activeArchiveTask && activeCatalogItem}<div class="archive-task-banner" role="status"><LoaderCircle aria-hidden="true" /><span><strong>{archiveTitle(activeArchiveTask)}</strong> · {taskStatus(activeCatalogItem)}</span><button type="button" class="text-action" on:click={() => load()} disabled={refreshing}>刷新状态</button></div>{/if}
 
   <div class="archive-toolbar">
     <label class="archive-search"><Search aria-hidden="true" /><input bind:value={searchQuery} placeholder="搜索标题或对话 ID" aria-label="搜索归档标题或对话 ID" />{#if searchQuery}<button type="button" aria-label="清除搜索" title="清除搜索" on:click={() => searchQuery = ''}><X aria-hidden="true" /></button>{/if}</label>
@@ -307,7 +329,7 @@
 
   <nav class="archive-filters" aria-label="归档筛选">{#each filters as filter}<button type="button" class:active={selectedView === filter.id} aria-pressed={selectedView === filter.id} on:click={() => selectedView = filter.id}>{filter.label}<span>{filterCounts[filter.id]}</span></button>{/each}</nav>
 
-  {#if catalogError}<div class="archive-error" role="alert"><CircleAlert aria-hidden="true" /><span>{catalogError}</span><button type="button" class="secondary-button" on:click={load}>重试</button></div>
+  {#if catalogError}<div class="archive-error" role="alert"><CircleAlert aria-hidden="true" /><span>{catalogError}</span><button type="button" class="secondary-button" on:click={() => load(true)}>重试</button></div>
   {:else if loading && !items.length}<div class="archive-empty" role="status"><LoaderCircle class="archive-loading" aria-hidden="true" /><span>正在读取归档…</span></div>
   {:else if !visibleItems.length}<div class="archive-empty"><Archive aria-hidden="true" /><strong>{items.length ? '没有匹配的归档' : '还没有归档记录'}</strong><span>{items.length ? '修改搜索词或筛选条件后重试。' : '从会话库归档对话后，副本会显示在这里。'}</span>{#if items.length}<button type="button" class="secondary-button" on:click={() => { searchQuery = ''; selectedView = 'all'; }}>清除筛选</button>{:else}<button class="secondary-button" type="button" on:click={onLibrary}>打开会话库</button>{/if}</div>
   {:else}
@@ -317,9 +339,9 @@
       {#each visibleItems as item (item.task.id)}
         <div class="archive-row-list-item" role="listitem">
         <button type="button" class="archive-row" class:selected={selectedTaskID === item.task.id} aria-pressed={selectedTaskID === item.task.id} on:click={() => openDetails(item)}>
-          <span class="archive-row-content"><span class="archive-row-title"><strong title={archiveTitle(item.task)}>{archiveTitle(item.task)}</strong>{#if item.task.encrypted}<span class="archive-encrypted" title="客户端加密"><ShieldCheck aria-hidden="true" /></span>{/if}</span><code class="archive-row-ids" title={archiveIDs(item.task).join(' · ')}>{archiveIDs(item.task).length === 1 ? archiveIDs(item.task)[0] : `${archiveIDs(item.task).length} 个对话 · ${archiveIDs(item.task).slice(0, 2).join(' · ')}${archiveIDs(item.task).length > 2 ? ' …' : ''}`}</code>{#if needsAttention(item)}<small class="archive-row-error">{item.task.management_error || item.task.error || '当前没有可用副本'}</small>{/if}</span>
-          <span class="archive-row-copies"><span class:present={item.local_available}><HardDrive aria-hidden="true" />本地</span><span class:present={item.remote_available}><Cloud aria-hidden="true" />云端</span></span>
-          <span class="archive-row-size"><strong>{formatBytes(archiveBytes(item.task))}</strong>{#if item.task.compression}<small>原始 {formatBytes(item.task.compression.original_bytes)}</small>{/if}</span>
+          <span class="archive-row-content"><span class="archive-row-title"><strong title={archiveTitle(item.task)}>{archiveTitle(item.task)}</strong>{#if item.task.encrypted}<span class="archive-encrypted" title="客户端加密"><ShieldCheck aria-hidden="true" /></span>{/if}</span><code class="archive-row-ids" title={archiveIDs(item.task).join(' · ')}>{archiveIDs(item.task).length === 0 ? '对话标识尚未读取' : archiveIDs(item.task).length === 1 ? archiveIDs(item.task)[0] : `${archiveIDs(item.task).length} 个对话 · ${archiveIDs(item.task).slice(0, 2).join(' · ')}${archiveIDs(item.task).length > 2 ? ' …' : ''}`}</code>{#if needsAttention(item)}<small class="archive-row-error">{item.task.management_error || item.task.error || item.notice || '当前没有可用副本'}</small>{/if}</span>
+          <span class="archive-row-copies"><span class:present={item.local_available}><HardDrive aria-hidden="true" />本地</span><span class:present={item.remote_available} class:uncertain={item.remote_stale}><Cloud aria-hidden="true" />{item.remote_stale ? '云端待核验' : '云端'}</span></span>
+          <span class="archive-row-size"><strong>{item.task.source_bytes || item.task.compression ? formatBytes(archiveBytes(item.task)) : '大小未知'}</strong>{#if item.task.compression}<small>原始 {formatBytes(item.task.compression.original_bytes)}</small>{/if}</span>
           <time class="archive-row-time" datetime={item.task.created_at} title={formatTime(item.task.created_at)}>{formatTime(item.task.created_at)}</time>
           <span class={`status-pill ${taskStatusClass(item)}`}>{taskStatus(item)}</span>
           <ChevronRight class="archive-row-chevron" aria-hidden="true" />
@@ -331,18 +353,19 @@
   {/if}
 </main>
 
-<LibraryDrawer bind:open={detailsOpen} title={selectedTitle} description={selectedItem ? `${selectedItem.task.source_ids.length} 个对话 · 归档于 ${formatTime(selectedItem.task.created_at)}` : ''}>
+<LibraryDrawer bind:open={detailsOpen} title={selectedTitle} description={selectedItem ? `${selectedItem.task.source_ids.length ? `${selectedItem.task.source_ids.length} 个对话` : '对话标识待确认'} · 归档于 ${formatTime(selectedItem.task.created_at)}` : ''}>
   {#if selectedItem}
     <div class="archive-detail">
       <section class="archive-detail-section">
         <div class="archive-detail-heading"><strong>副本位置</strong><span class={`status-pill ${taskStatusClass(selectedItem)}`}>{taskStatus(selectedItem)}</span></div>
-        <div class="archive-copy-location"><HardDrive aria-hidden="true" /><div><strong>本地归档</strong><span>{selectedItem.local_available ? localRoot || '本地副本已发现' : '无本地副本'}</span>{#if restoreCheckLabel(selectedItem.task, 'local')}<small>{restoreCheckLabel(selectedItem.task, 'local')}</small>{/if}</div><Check class={selectedItem.local_available ? 'copy-visible' : ''} aria-label={selectedItem.local_available ? '本地副本存在' : '无本地副本'} /></div>
-        <div class="archive-copy-location"><Cloud aria-hidden="true" /><div><strong>云端归档</strong><span>{selectedItem.remote_available ? selectedItem.task.target || remoteTarget || '云端副本已发现' : remoteError || '无云端副本'}</span>{#if restoreCheckLabel(selectedItem.task, 'remote')}<small>{restoreCheckLabel(selectedItem.task, 'remote')}</small>{/if}</div><Check class={selectedItem.remote_available ? 'copy-visible' : ''} aria-label={selectedItem.remote_available ? '云端副本存在' : '无云端副本'} /></div>
+        <div class="archive-copy-location"><HardDrive aria-hidden="true" /><div><strong>本地归档</strong><span>{selectedItem.local_available ? selectedItem.task.local_path || localRoot || '本地副本已发现' : '无本地副本'}</span>{#if restoreCheckLabel(selectedItem.task, 'local')}<small>{restoreCheckLabel(selectedItem.task, 'local')}</small>{/if}</div><Check class={selectedItem.local_available ? 'copy-visible' : ''} aria-label={selectedItem.local_available ? '本地副本清单存在' : '无本地副本'} /></div>
+        <div class="archive-copy-location"><Cloud aria-hidden="true" /><div><strong>云端归档{selectedItem.remote_stale ? ' · 待核验' : ''}</strong><span>{selectedItem.remote_available ? selectedItem.task.target || remoteTarget || '云端副本已发现' : remoteError || '无云端副本'}</span>{#if restoreCheckLabel(selectedItem.task, 'remote')}<small>{restoreCheckLabel(selectedItem.task, 'remote')}</small>{/if}</div><Check class={selectedItem.remote_available && !selectedItem.remote_stale ? 'copy-visible' : ''} aria-label={selectedItem.remote_stale ? '上次清单记录的副本，当前待核验' : selectedItem.remote_available ? '云端清单已发现副本' : '无云端副本'} /></div>
+        <small class="archive-restore-note">位置与数量来自归档清单，完整内容会在执行前重新校验。</small>
       </section>
 
       <section class="archive-detail-section archive-detail-stats">
-        <div><span>当前副本</span><strong>{formatBytes(archiveBytes(selectedItem.task))}</strong></div>
-        <div><span>原始大小</span><strong>{formatBytes(selectedItem.task.compression?.original_bytes ?? selectedItem.task.source_bytes)}</strong></div>
+        <div><span>当前副本</span><strong>{selectedItem.task.source_bytes || selectedItem.task.compression ? formatBytes(archiveBytes(selectedItem.task)) : '大小未知'}</strong></div>
+        <div><span>原始大小</span><strong>{selectedItem.task.source_bytes || selectedItem.task.compression ? formatBytes(selectedItem.task.compression?.original_bytes ?? selectedItem.task.source_bytes) : '大小未知'}</strong></div>
         <div><span>归档时间</span><strong>{formatTime(selectedItem.task.created_at)}</strong></div>
       </section>
 
@@ -364,12 +387,14 @@
       </section>
 
       <section class="archive-detail-section">
-        <details class="archive-identifiers"><summary>{archiveIDs(selectedItem.task).length} 个原始 conversation ID</summary><ul>{#each archiveIDs(selectedItem.task) as id}<li><code>{id}</code></li>{/each}</ul></details>
+        {#if archiveIDs(selectedItem.task).length}<details class="archive-identifiers"><summary>{archiveIDs(selectedItem.task).length} 个原始 conversation ID</summary><ul>{#each archiveIDs(selectedItem.task) as id}<li><code>{id}</code></li>{/each}</ul></details>{:else}<p class="archive-restore-record archive-muted">对话标识尚未读取</p>{/if}
         {#if selectedItem.task.error || selectedItem.task.management_error}<p class="archive-row-error">{selectedItem.task.management_error || selectedItem.task.error}</p>{/if}
       </section>
 
       <section class="archive-detail-section archive-management-actions">
         <strong>操作</strong>
+        {#if selectedItem.manageable === false}<p class="archive-restore-record archive-muted" role="status">{selectedItem.notice || '来源工作区尚未关联，仅供查看。'}</p>
+        {:else}
         {#if selectedItem.task.compression && (selectedItem.local_available || selectedItem.remote_available)}<button type="button" class="archive-primary-action" on:click={() => openAction(selectedItem, 'restore')} disabled={selectedItem.task.management_state === 'running'}><ArrowDownToLine aria-hidden="true" />恢复或核验到 .codex</button>{/if}
         {#if selectedItem.local_available && selectedItem.remote_available}
           <div class="archive-action-group"><span>保留位置</span><small>保留一份会删除另一位置的副本，并要求输入确认数字。</small><div class="archive-action-pair archive-retain-actions"><button type="button" on:click={() => openAction(selectedItem, 'delete_remote', 'remote')} disabled={Boolean(remoteError) || selectedItem.task.management_state === 'running'}><HardDrive aria-hidden="true" />仅保留本地</button><button type="button" on:click={() => openAction(selectedItem, 'delete_local', 'local')} disabled={selectedItem.task.management_state === 'running'}><Cloud aria-hidden="true" />仅保留云端</button></div></div>
@@ -377,6 +402,7 @@
           <div class="archive-action-group"><span>云端副本尚未保存</span><div class="archive-action-pair"><button type="button" on:click={() => openAction(selectedItem, 'copy_remote')} disabled={Boolean(remoteError) || selectedItem.task.management_state === 'running'}><Cloud aria-hidden="true" />复制到云端</button><button type="button" on:click={() => openAction(selectedItem, 'move_remote')} disabled={Boolean(remoteError) || selectedItem.task.management_state === 'running'}><Cloud aria-hidden="true" />迁移到云端</button></div><button type="button" class="archive-last-copy-action" on:click={() => openAction(selectedItem, 'delete_local', 'local')} disabled={selectedItem.task.management_state === 'running'}><Trash2 aria-hidden="true" />删除唯一副本</button></div>
         {:else if selectedItem.remote_available}
           <div class="archive-action-group"><span>本地副本尚未保存</span><div class="archive-action-pair"><button type="button" on:click={() => openAction(selectedItem, 'copy_local')} disabled={selectedItem.task.management_state === 'running'}><HardDrive aria-hidden="true" />复制到本地</button><button type="button" on:click={() => openAction(selectedItem, 'move_local')} disabled={selectedItem.task.management_state === 'running'}><HardDrive aria-hidden="true" />迁移到本地</button></div><button type="button" class="archive-last-copy-action" on:click={() => openAction(selectedItem, 'delete_remote', 'remote')} disabled={Boolean(remoteError) || selectedItem.task.management_state === 'running'}><Trash2 aria-hidden="true" />删除唯一副本</button></div>
+        {/if}
         {/if}
       </section>
     </div>
@@ -435,6 +461,11 @@
   .archive-overview > div:first-child { border-left: 0; padding-left: var(--space-2); }
   .archive-overview strong { font-size: var(--font-heading); font-variant-numeric: tabular-nums; line-height: 1.1; }
   .archive-overview span, .archive-task-banner { color: var(--text-muted); font-size: var(--font-caption); }
+  .archive-catalog-notices { display: grid; gap: var(--space-2); min-width: 0; color: var(--text-muted); font-size: var(--font-caption); }
+  .archive-catalog-status { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+  .archive-catalog-status > :global(svg) { flex: 0 0 auto; color: var(--warning); }
+  .archive-catalog-issues summary { cursor: pointer; }
+  .archive-catalog-issues li { overflow-wrap: anywhere; }
   .archive-task-banner { display: flex; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-2) var(--space-3); border-left: 2px solid var(--accent); background: var(--bg-subtle); }
   .archive-task-banner > :global(svg) { flex: 0 0 16px; width: 16px; height: 16px; animation: archive-spin .9s linear infinite; }
   .archive-task-banner > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -468,6 +499,7 @@
   .archive-row-copies span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .archive-row-copies :global(svg) { width: 14px; height: 14px; }
   .archive-row-copies .present { color: var(--text-primary); }
+  .archive-row-copies .uncertain { color: var(--warning); }
   .archive-row-size { display: grid; gap: 2px; min-width: 0; font-size: var(--font-caption); font-variant-numeric: tabular-nums; }
   .archive-row-size strong { font-weight: 550; }
   .archive-row-size small, .archive-row-time { color: var(--text-muted); font-size: var(--font-caption); }

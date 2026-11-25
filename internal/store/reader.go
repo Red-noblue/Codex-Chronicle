@@ -6,11 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"codex-chronicle.local/internal/domain"
-	"codex-chronicle.local/internal/searchtext"
 )
 
 // LoadReaderProjection 只读取本项目的有界导航元数据，不含消息正文和工具输出。
@@ -74,28 +72,19 @@ func (s *Store) ReaderSearchCandidates(ctx context.Context, root string, paths [
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	args := []any{stableID("workspace", root)}
-	marks := make([]string, len(paths))
-	for i, path := range paths {
-		marks[i] = "?"
-		args = append(args, path)
-	}
-	selectSQL := `SELECT loc.conversation_id,loc.source_path,loc.line,loc.start_offset,loc.end_offset,loc.snippet,loc.top_type,asset.status
-		FROM search_documents JOIN search_locations loc ON loc.doc_id=search_documents.asset_id
-		JOIN assets asset ON asset.id=loc.asset_id WHERE asset.workspace_id=? AND loc.source_path IN (` + strings.Join(marks, ",") + `)`
-	match := `"` + strings.ReplaceAll(searchtext.Normalize(query), `"`, `""`) + `"`
-	rows, err := s.db.QueryContext(ctx, selectSQL+` AND search_documents MATCH ? ORDER BY loc.source_path,loc.line LIMIT 100`, append(args, match)...)
+	files, err := s.IndexFilesFromCatalog(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	hits, err := scanSearchRows(rows, 100)
-	if err != nil || len(hits) > 0 {
-		return hits, err
+	allowed := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		allowed[path] = true
 	}
-	like := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(strings.TrimSpace(query))
-	rows, err = s.db.QueryContext(ctx, selectSQL+` AND loc.snippet LIKE '%' || ? || '%' ESCAPE '\' ORDER BY loc.source_path,loc.line LIMIT 100`, append(args, like)...)
-	if err != nil {
-		return nil, err
+	scoped := make([]domain.FileInventory, 0, len(paths))
+	for _, file := range files {
+		if allowed[file.RelativePath] {
+			scoped = append(scoped, file)
+		}
 	}
-	return scanSearchRows(rows, 100)
+	return s.SearchWithFiles(ctx, root, query, 100, scoped)
 }

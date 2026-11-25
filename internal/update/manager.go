@@ -71,12 +71,13 @@ type Plan struct {
 
 // State 是安装根的当前版本指针；它通过原子替换写入，不依赖软链接。
 type State struct {
-	ActiveVersion   string    `json:"active_version,omitempty"`
-	PreviousVersion string    `json:"previous_version,omitempty"`
-	LastOperationID string    `json:"last_operation_id,omitempty"`
-	LastStatus      string    `json:"last_status,omitempty"`
-	LastError       string    `json:"last_error,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	InstalledVersion string    `json:"installed_version,omitempty"`
+	ActiveVersion    string    `json:"active_version,omitempty"`
+	PreviousVersion  string    `json:"previous_version,omitempty"`
+	LastOperationID  string    `json:"last_operation_id,omitempty"`
+	LastStatus       string    `json:"last_status,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // Status 是 UI/API 可展示的安装状态。
@@ -92,6 +93,27 @@ type Status struct {
 	TrustedKeyCount   int      `json:"trusted_key_count"`
 	OnlineConfigured  bool     `json:"online_configured"`
 	OnlineFeedURL     string   `json:"online_feed_url,omitempty"`
+	OnlineProxyURL    string   `json:"online_proxy_url,omitempty"`
+}
+
+// SetOnlineProxy 更新并持久化仅供在线更新使用的代理地址。
+func (m *Manager) SetOnlineProxy(proxyURL string) error {
+	if m == nil {
+		return errors.New("更新管理器未初始化")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	config := m.online
+	config.ProxyURL = strings.TrimSpace(proxyURL)
+	validated, err := normalizeOnlineConfig(config)
+	if err != nil {
+		return err
+	}
+	if err := saveOnlineProxy(filepath.Join(m.root, "online-proxy.json"), validated.ProxyURL); err != nil {
+		return fmt.Errorf("保存在线更新代理失败：%w", err)
+	}
+	m.online = validated
+	return nil
 }
 
 // Result 是一次版本切换或回滚的可验证结果。
@@ -149,6 +171,16 @@ func NewManagerWithOptions(root string, options ManagerOptions) (*Manager, error
 	online, err := normalizeOnlineConfig(options.Online)
 	if err != nil {
 		return nil, err
+	}
+	proxyPath := filepath.Join(abs, "online-proxy.json")
+	if storedProxy, loadErr := loadOnlineProxy(proxyPath); loadErr != nil {
+		return nil, loadErr
+	} else if storedProxy != nil {
+		online.ProxyURL = *storedProxy
+		online, err = normalizeOnlineConfig(online)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Manager{root: abs, trustedPublicKeys: keys, requireSignature: options.RequireSignature, online: online}, nil
 }
@@ -573,7 +605,7 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 		m.recordFailure(ctx, journal, err)
 		return Result{}, fmt.Errorf("更新发布 journal 失败：%w", err)
 	}
-	next := State{ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		if m.registerArtifact == nil {
 			_ = os.RemoveAll(finalRoot)
@@ -637,7 +669,7 @@ func (m *Manager) Rollback(ctx context.Context, health HealthCheck) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	next := State{ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		return Result{}, fmt.Errorf("提交回滚状态失败：%w", err)
 	}
@@ -664,7 +696,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL}, nil
+	return Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL, OnlineProxyURL: m.online.ProxyURL}, nil
 }
 
 // VerifyVersionRoot 只读验证一个已发布版本目录的清单和全部文件摘要。
@@ -804,6 +836,9 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 	if err := m.recoverDownloads(ctx); err != nil {
 		return err
 	}
+	if err := m.recoverBaselines(); err != nil {
+		return err
+	}
 	path := filepath.Join(m.root, JournalName)
 	var entry journal
 	if err := readJSON(path, &entry); err != nil {
@@ -887,6 +922,9 @@ func (m *Manager) readState() (State, error) {
 	}
 	if state.ActiveVersion != "" && !safeVersion(state.ActiveVersion) {
 		return State{}, errors.New("安装状态中的当前版本无效")
+	}
+	if state.InstalledVersion != "" && !safeVersion(state.InstalledVersion) {
+		return State{}, errors.New("安装状态中的基线版本无效")
 	}
 	if state.PreviousVersion != "" && !safeVersion(state.PreviousVersion) {
 		return State{}, errors.New("安装状态中的旧版本无效")

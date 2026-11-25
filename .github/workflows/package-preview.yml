@@ -1,5 +1,5 @@
-# 中文说明：公开源码的跨平台回归与预览包构建；只有版本标签且所有检查成功才发布，不访问用户 Codex 数据。
-name: 验证与发布预览版
+# 中文说明：验证正式版与预览版的固定更新渠道，先校验并上传完整草稿，再公开版本；不访问用户 Codex 数据。
+name: 验证与发布
 on:
   push:
     branches: [main]
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 仅构建测试包的预览版本，例如 0.1.0-preview.11
+        description: 仅构建、不公开发布，例如 0.1.0 或 0.1.0-preview.12
         required: true
         type: string
 permissions:
@@ -35,6 +35,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: 发布资产与渠道回归
+        run: python scripts/test-release-feed.py
+      - name: Linux 桌面协议与原生窗口依赖
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 zenity xvfb xauth xdotool desktop-file-utils
       - name: Go 回归与静态检查
         shell: bash
         run: |
@@ -51,9 +56,53 @@ jobs:
           npm test
           npm run check
           npm run build
+      - name: 安装版端口冲突与设置恢复
+        shell: bash
+        run: |
+          mkdir -p .local/port-check/bin
+          suffix=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=".exe"; fi
+          go build -o ".local/port-check/bin/codex-chronicle${suffix}" ./cmd/codex-chronicle
+          go build -o ".local/port-check/bin/codex-chronicle-desktop${suffix}" ./cmd/codex-chronicle-desktop
+          cp -R web/dist .local/port-check/web
+          python3 scripts/test-desktop-ports.py --package-root .local/port-check
+      - name: 签名安装基线与真实升级回滚
+        shell: bash
+        run: python3 scripts/test-installed-update.py
+      - name: Linux D-Bus 托盘与端口设置窗口
+        if: runner.os == 'Linux'
+        run: |
+          dbus-run-session -- go test -race -count=1 ./internal/desktopui/linuxtray
+          dbus-run-session -- xvfb-run -a python3 scripts/test-linux-desktop.py --launcher .local/port-check/bin/codex-chronicle-desktop
+          desktop-file-validate packaging/linux/codex-chronicle.desktop
+  release-config:
+    name: 确定版本与更新渠道
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.config.outputs.version }}
+      channel: ${{ steps.config.outputs.channel }}
+      feed-url: ${{ steps.config.outputs.feed_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 校验正式版本或预览版本
+        id: config
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            chronicle_version="${GITHUB_REF#refs/tags/v}"
+          else
+            chronicle_version="$INPUT_VERSION"
+          fi
+          python3 scripts/release-feed.py config "$chronicle_version" --repository "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
   package:
     name: 安装包 / ${{ matrix.os }}-${{ matrix.arch }}
-    needs: test
+    needs: release-config
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
@@ -81,20 +130,10 @@ jobs:
     timeout-minutes: 30
     env:
       CHRONICLE_ARCH: ${{ matrix.arch }}
+      CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
+      CHRONICLE_UPDATE_FEED_URL: ${{ needs.release-config.outputs.feed-url }}
     steps:
       - uses: actions/checkout@v4
-      - name: 从标签或手动输入确定版本
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            CHRONICLE_VERSION="${GITHUB_REF#refs/tags/v}"
-          else
-            CHRONICLE_VERSION="$INPUT_VERSION"
-          fi
-          [[ "$CHRONICLE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]] || { echo '此工作流仅发布 preview 版本'; exit 1; }
-          echo "CHRONICLE_VERSION=$CHRONICLE_VERSION" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -109,6 +148,19 @@ jobs:
       - name: 安装前端构建依赖
         working-directory: web
         run: npm ci
+      - name: 准备注入发布签名私钥
+        shell: bash
+        env:
+          CHRONICLE_UPDATE_SIGNING_KEY: ${{ secrets.CHRONICLE_UPDATE_SIGNING_KEY }}
+          CHRONICLE_UPDATE_SIGNING_KEY_ID: ${{ secrets.CHRONICLE_UPDATE_SIGNING_KEY_ID }}
+        run: |
+          [[ -n "$CHRONICLE_UPDATE_SIGNING_KEY" ]] || { echo '缺少仓库 Secret：CHRONICLE_UPDATE_SIGNING_KEY' >&2; exit 1; }
+          [[ -n "$CHRONICLE_UPDATE_SIGNING_KEY_ID" ]] || { echo '缺少仓库 Secret：CHRONICLE_UPDATE_SIGNING_KEY_ID' >&2; exit 1; }
+          chronicle_signing_key="$RUNNER_TEMP/codex-chronicle-update-signing-key"
+          printf '%s\n' "$CHRONICLE_UPDATE_SIGNING_KEY" > "$chronicle_signing_key"
+          chmod 600 "$chronicle_signing_key"
+          echo "CHRONICLE_SIGNING_PRIVATE_KEY_FILE=$chronicle_signing_key" >> "$GITHUB_ENV"
+          echo "CHRONICLE_SIGNING_KEY_ID=$CHRONICLE_UPDATE_SIGNING_KEY_ID" >> "$GITHUB_ENV"
       - name: 构建共同载荷与平台便携包
         shell: bash
         run: bash scripts/build-release.sh "$CHRONICLE_VERSION" '${{ matrix.os }}' "$CHRONICLE_ARCH"
@@ -168,39 +220,65 @@ jobs:
             dist/${{ env.CHRONICLE_VERSION }}/${{ matrix.os }}-${{ matrix.arch }}/*.deb
             dist/${{ env.CHRONICLE_VERSION }}/${{ matrix.os }}-${{ matrix.arch }}/*.rpm
             dist/${{ env.CHRONICLE_VERSION }}/${{ matrix.os }}-${{ matrix.arch }}/SHA256SUMS
+      - name: 清理发布签名私钥
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CHRONICLE_SIGNING_PRIVATE_KEY_FILE:-}" ]]; then
+            rm -f -- "$CHRONICLE_SIGNING_PRIVATE_KEY_FILE"
+          fi
   release:
-    name: 发布公开预览版
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 核验草稿并公开版本
+    needs: [release-config, package]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    concurrency:
+      group: chronicle-public-release
+      cancel-in-progress: false
     permissions:
       contents: write
+    env:
+      CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
+      CHRONICLE_CHANNEL: ${{ needs.release-config.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - uses: actions/download-artifact@v4
         with:
           pattern: Codex-Chronicle-*
           path: release-assets
       - name: 核对摘要并准备发布资产
-        run: |
-          python3 - <<'PY'
-          import hashlib, pathlib, shutil
-          target = pathlib.Path('publish')
-          target.mkdir()
-          combined = []
-          for sums in sorted(pathlib.Path('release-assets').glob('*/SHA256SUMS')):
-              for line in sums.read_text().splitlines():
-                  expected, name = line.split('  ', 1)
-                  source = sums.parent / name
-                  with source.open('rb') as handle:
-                      assert hashlib.file_digest(handle, 'sha256').hexdigest() == expected, name
-                  assert not (target / name).exists(), name
-                  shutil.copy2(source, target / name)
-                  combined.append(line)
-          assert len(combined) == 16, f'预计 16 个安装包，实际 {len(combined)}'
-          (target / 'SHA256SUMS').write_text('\n'.join(sorted(combined)) + '\n')
-          PY
-      - name: 创建预览 Release
+        run: python3 scripts/release-feed.py assemble "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY"
+      - name: 创建或恢复未公开草稿并上传资产
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" publish/* --verify-tag --prerelease --latest=false --title "Codex Chronicle ${GITHUB_REF_NAME#v} · 首发预览版" --notes-file packaging/预览版说明.md
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > "$RUNNER_TEMP/chronicle-draft-state"; then
+            [[ "$(cat "$RUNNER_TEMP/chronicle-draft-state")" == true ]] || { echo '该版本已公开，拒绝覆盖发布资产' >&2; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" publish/* --clobber
+          else
+            chronicle_args=(--draft --verify-tag --title "Codex Chronicle $CHRONICLE_VERSION")
+            if [[ "$CHRONICLE_CHANNEL" == preview ]]; then
+              chronicle_args+=(--prerelease --notes-file packaging/预览版说明.md)
+            else
+              chronicle_args+=(--generate-notes)
+            fi
+            gh release create "$GITHUB_REF_NAME" publish/* "${chronicle_args[@]}"
+          fi
+      - name: 验证 GitHub 草稿资产与摘要
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > "$RUNNER_TEMP/chronicle-release.json"
+          python3 scripts/release-feed.py verify-upload "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --release-json "$RUNNER_TEMP/chronicle-release.json"
+      - name: 公开版本并设置渠道
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$CHRONICLE_CHANNEL" == preview ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          fi

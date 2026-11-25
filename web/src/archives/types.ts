@@ -44,7 +44,15 @@ export type ArchiveTask = {
   restore_checks?: Partial<Record<'local' | 'remote', { status: string; checked_at: string }>>;
 };
 
-export type ArchiveCatalogItem = { task: ArchiveTask; local_available: boolean; remote_available: boolean };
+export type ArchiveCatalogItem = {
+  task: ArchiveTask;
+  local_available: boolean;
+  remote_available: boolean;
+  remote_stale?: boolean;
+  manageable?: boolean;
+  discovered?: boolean;
+  notice?: string;
+};
 export type ArchiveManagementPreview = {
   preview_id: string;
   task_id: string;

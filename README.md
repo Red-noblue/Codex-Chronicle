@@ -27,7 +27,15 @@
 | Windows | 每用户 Setup EXE、便携 ZIP；amd64 / arm64 | 运行安装器，或解压后启动 `bin/codex-chronicle-desktop.exe` |
 | Linux | DEB、RPM、tar.gz、ZIP；amd64 / arm64 | 安装对应发行版包，或解压后运行 `bin/codex-chronicle-desktop` |
 
-应用使用系统浏览器显示界面，后台默认监听本机 `127.0.0.1:8787`，端口冲突时安装版会选择空闲端口。首次启动自动检查 `CODEX_HOME` 和 `~/.codex`，也可在“设置 → 工作区”添加目录。
+应用使用系统浏览器显示界面，网页、API、健康检查和启动器控制共用一个本机端口，首选 `127.0.0.1:8787`。默认复用上次成功的地址；端口被其他程序占用时自动选择空闲端口，完成身份与健康检查后打开实际地址。重复启动会复用已核验的实例。首次启动自动检查 `CODEX_HOME` 和 `~/.codex`，也可在“设置 → 工作区”添加目录。
+
+macOS 菜单栏与 Windows 通知区域（系统托盘）使用原生图标：左键打开工作台，右键展开菜单，macOS 也支持 Control + 单击。菜单展示当前实际地址，可复制地址、设置登录时启动、选择首选端口、开关自动回退、打开日志或安全退出。关闭浏览器不会退出后台；重复打开应用不会增加后台或图标。Windows 图标可能位于通知区域的折叠菜单中。
+
+登录自启动默认关闭，开启后仅显示图标，不主动打开网页。端口设置保存在用户数据目录的 `startup.json`，下次启动生效；主动保存端口后，每次优先尝试该端口，是否避让取决于自动回退开关。显式传入 `--address 127.0.0.1:端口` 优先于保存的设置，并且始终严格使用该地址，冲突会报错。启动失败时仍可从错误窗口打开端口设置，或直接运行启动器 `--startup-settings`；`--status` 可查看已核验实例的实际地址。
+
+Linux 通过会话 D-Bus 的 StatusNotifierItem / DBusMenu 提供托盘，适配支持该协议的 KDE Plasma 等桌面，X11 和 Wayland 共用这套实现。GNOME Shell 通常需要 AppIndicator / KStatusNotifierItem 扩展；点击方式由桌面宿主决定，部分宿主会将左键也用于展开菜单，此时选择“打开工作台”。没有托盘宿主时显示独立“后台管理”窗口；关闭窗口后后台继续运行，再次打开应用可重新进入管理窗口。应用菜单另有“端口设置”和“安全退出后台”快捷动作。无图形桌面时使用 `--no-browser`、`--status`、`--quit`，不会创建图标。
+
+Linux 原生设置和管理窗口使用 `zenity`，打开网页使用 `xdg-utils`，DEB/RPM 会声明这两项依赖；便携包需自行安装。复制地址优先使用 Wayland 的 `wl-copy` 或 X11 的 `xclip`，未安装时显示可选中复制的地址窗口。登录自启动写入 `$XDG_CONFIG_HOME/autostart/codex-chronicle.desktop`，默认是 `~/.config/autostart/`，仅作用于当前用户。托盘、管理窗口和登录启动均不增加 TCP 监听端口。
 
 macOS 包当前只有临时签名，尚无 Developer ID 签名和 Apple 公证，系统可能阻止首次打开；请核对下载来源及 SHA256SUMS 后，在系统“隐私与安全性”中批准。Windows 安装器尚无代码签名。各平台的实际验证范围见对应 Release 说明。
 
@@ -39,6 +47,8 @@ macOS 包当前只有临时签名，尚无 Developer ID 签名和 Apple 公证�
 - Windows：`%LOCALAPPDATA%\Codex Chronicle\`
 - Linux：`$XDG_DATA_HOME/codex-chronicle/`，未配置时为 `~/.local/share/codex-chronicle/`
 - 本地归档默认：用户“文稿 / Documents”下的 `Codex Chronicle/archives/`；可另行选择。
+
+主题、界面密度和已保存筛选会保存在应用数据目录，换端口后仍可恢复；首次使用会导入当前浏览器已有的对应设置。临时选择、会话令牌和阅读位置仍遵循原有浏览器会话与来源范围。
 
 先通过菜单栏或启动器 `--quit` 安全退出后台，再卸载应用或移走便携包。卸载保留配置、索引、归档和恢复材料，也不删除 `.codex`。这些数据可在确认不再需要后由用户另行处理。
 
@@ -80,6 +90,8 @@ go run ./cmd/codex-chronicle --scan-root /absolute/path/to/codex-home --archive-
 ```
 
 默认只监听本机。需要远程访问时，必须显式启用 `--allow-remote`，通过一次性绑定码建立会话，并自行配置 TLS 反向代理。
+
+源码运行时也使用 `http://127.0.0.1:8787/`，前端修改后重新执行 `npm run build`。`npm run dev` 使用的 `5173` 仅供需要热更新的前端开发调试，不作为发布入口；发布包不启动 Vite。
 
 构建安装包：
 

@@ -72,6 +72,34 @@ func TestOnlineConfigAcceptsSupportedProxySchemes(t *testing.T) {
 	}
 }
 
+func TestOnlineProxySettingPersistsAndRejectsUnsupportedScheme(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "updates")
+	options := ManagerOptions{Online: OnlineConfig{FeedURL: "https://updates.example.invalid/feed.json"}}
+	manager, err := NewManagerWithOptions(root, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetOnlineProxy("http://127.0.0.1:7890"); err != nil {
+		t.Fatal(err)
+	}
+	for _, proxy := range []string{"ftp://127.0.0.1:7890", "http://user:secret@127.0.0.1:7890"} {
+		if err := manager.SetOnlineProxy(proxy); err == nil {
+			t.Fatalf("invalid proxy was accepted: %s", proxy)
+		}
+	}
+	restarted, err := NewManagerWithOptions(root, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := restarted.Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.OnlineProxyURL != "http://127.0.0.1:7890" {
+		t.Fatalf("persisted proxy = %q", status.OnlineProxyURL)
+	}
+}
+
 func TestDownloadOnlineVerifiesSizeHashAndCleansFailures(t *testing.T) {
 	artifact := []byte("online-release-content")
 	digest := sha256.Sum256(artifact)

@@ -41,7 +41,12 @@ export function summarizeImpact(sourceID: string, plannedFiles: ImpactFile[] = [
   };
 }
 
+export function impactNeedsRefresh(error: string): boolean {
+  return /(?:目标|子代理|线程).*已不存在|未找到.*对话|会话数据库中不存在|元数据身份不匹配|rollout 路径与目标不一致/.test(error);
+}
+
 export function impactBlockerMessage(error: string): string {
+  if (impactNeedsRefresh(error)) return '所选会话已不存在，或会话标识与源数据不一致。请刷新会话库后重新选择；本次未执行删除。';
   if (/关联父会话仍被 daemon 加载/.test(error)) return '目标或关联父会话仍在使用中。请结束对应会话后重新检查。';
   if (/spawn.*冲突|spawn.*存在环|子代理.*冲突/.test(error)) return '子代理关系存在冲突，需要先核对父子关系。';
   if (/spawn.*变化/.test(error)) return '子代理关系在预览后变化，请重新检查影响。';

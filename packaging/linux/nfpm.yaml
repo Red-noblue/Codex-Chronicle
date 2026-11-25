@@ -9,6 +9,9 @@ homepage: https://github.com/RED-NOBLUE/Codex-Chronicle
 description: 本地 Codex 对话档案库，使用系统浏览器浏览和管理历史记录。
 maintainer: RED-NOBLUE
 license: MIT
+depends:
+  - zenity
+  - xdg-utils
 scripts:
   preinstall: packaging/linux/before-change.sh
   preremove: packaging/linux/before-change.sh

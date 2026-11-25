@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -17,6 +18,38 @@ type updatePrepareRequest struct {
 
 type updatePlanRequest struct {
 	PlanID string `json:"plan_id"`
+}
+
+type updateProxyRequest struct {
+	ProxyURL string `json:"proxy_url"`
+}
+
+func (s *Server) updateProxyHandler(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPut {
+		writeError(writer, http.StatusMethodNotAllowed, "只支持 PUT")
+		return
+	}
+	if s.updater == nil {
+		writeJSON(writer, http.StatusConflict, map[string]any{"available": false, "error": "当前服务未配置独立更新管理器"})
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, 8<<10)
+	var input updateProxyRequest
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(&input); err != nil || !errors.Is(decoder.Decode(new(any)), io.EOF) {
+		writeError(writer, http.StatusBadRequest, "代理设置必须是有效 JSON")
+		return
+	}
+	if err := s.updater.SetOnlineProxy(input.ProxyURL); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	status, err := s.updater.Status(request.Context())
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"available": true, "status": status})
 }
 
 func (s *Server) updateStatusHandler(writer http.ResponseWriter, request *http.Request) {

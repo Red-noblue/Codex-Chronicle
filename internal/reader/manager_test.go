@@ -81,6 +81,41 @@ func TestProjectionRejectsOversizedRecordWithoutPartialResult(t *testing.T) {
 	}
 }
 
+type projectionCacheRecorder struct{ writes int }
+
+func (*projectionCacheRecorder) LoadReaderProjection(context.Context, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (c *projectionCacheRecorder) SaveReaderProjection(context.Context, string, string, []byte) error {
+	c.writes++
+	return nil
+}
+
+func TestProjectionOverDiskBudgetRemainsReadable(t *testing.T) {
+	const turns = 36000
+	line := message(strings.Repeat("对", 100))
+	data := strings.Repeat(line, turns-1) + message("last question")
+	s := source(t, t.TempDir(), "rollout-2026-11-21T10-00-00-projection.jsonl", data)
+	plan := BuildPlan(t.Context(), []Source{s}, []string{s.Relative})
+	m := NewManager()
+	defer m.Invalidate()
+	cache := &projectionCacheRecorder{}
+	job := m.job(plan, cache)
+	p, err := m.Wait(t.Context(), plan, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.size <= maxProjectionCacheBytes || job.size > maxProjectionMemoryBytes || cache.writes != 0 || len(p.Turns) != turns {
+		t.Fatalf("应保留完整内存投影且跳过超预算缓存：大小 %d，保存 %d 次，轮次 %d", job.size, cache.writes, len(p.Turns))
+	}
+	plan.Projection = p
+	page, err := ReadPage(t.Context(), plan, Position{Path: s.Relative, Offset: int64((turns - 1) * len(line)), Line: turns - 1}, 1, nil, true)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Text != "last question" {
+		t.Fatalf("应能从末尾结果定位正文：%v，%+v", err, page.Items)
+	}
+}
+
 func TestProjectionRejectsTurnLimitAtEndOfSnapshot(t *testing.T) {
 	var data strings.Builder
 	for i := 0; i <= maxProjectionEntries; i++ {

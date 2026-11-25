@@ -25,7 +25,8 @@ ALLOWED_IDS = frozenset((
     '00000000-0000-4000-8000-000000000103',
     '00000000-0000-4000-8000-000000000104',
 ))
-# 来自已逐表、逐触发器审阅的 0.166/0.167 六库；忽略 sqlite_sequence 等内部自动对象。
+THREAD_ID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+# 来自已逐表、逐触发器审阅的旧版六库；忽略 sqlite_sequence 等内部自动对象。
 SCHEMAS = {
     'goals_1.sqlite': 'b5bbeffcdce787cf1c58e2f7f36224636c1e537071d63def3e6126db1aed7b78',
     'logs_2.sqlite': '02d028700f9563ad0e26baa15fc4b7f7eba7cb953da0ac8da6ab322ed105b47e',
@@ -34,11 +35,16 @@ SCHEMAS = {
     'state_5.sqlite': 'c21296b03b414e9f80764408d01844e463a195f53b5f897553909d1af315eef6',
     'thread_history_1.sqlite': 'dd8535f7ddfcec6371902a2459569aa1323875dd2090125e8d5cd05b715159fe',
 }
+# 0.171.0 的 state 新增模型归属表及索引，thread_history 只增加实时记录索引。
+REVIEWED_SCHEMA_VARIANTS = {
+    'state_5.sqlite': '9f46b92759290498959f51b5d514b810a8c37defda2a322130501e86191ca60c',
+    'thread_history_1.sqlite': 'b3b33b6ca17b4f5e2bbdf735a3244a63cdc63c6193edb1893add6c002742941a',
+}
 OWNERS = {
     'thread_goals': 'thread_id', 'thread_goal_continuation_deferrals': 'thread_id',
     'logs': 'thread_id', 'stage1_outputs': 'thread_id', 'jobs': 'job_key',
     'queued_items': 'thread_id', 'queued_thread_revisions': 'thread_id',
-    'threads': 'id', 'guardian_review_feedback': 'thread_id',
+    'threads': 'id', 'guardian_review_feedback': 'thread_id', 'session_model_ids': 'session_id',
     'thread_attachments': 'thread_id', 'thread_dynamic_tools': 'thread_id',
     'thread_read_receipts': 'thread_id', 'thread_items': 'thread_id',
     'thread_turns': 'thread_id', 'thread_realtime_items': 'thread_id',
@@ -131,7 +137,7 @@ def durable_copy(source, destination):
 
 def validate_scope(root, ids, all_conversations=False):
     require(ids and len(ids) <= 100 and len(ids) == len(set(ids)) and
-            (all(re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', tid) for tid in ids)
+            (all(THREAD_ID.fullmatch(tid) for tid in ids)
              if all_conversations else set(ids) <= ALLOWED_IDS), '目标 ID 未授权、无效或重复')
     root = pathlib.Path(root).absolute()
     safe(root, '.')
@@ -164,11 +170,8 @@ class Daemon:
         self.sequence = 0
         info = self.rpc('initialize', {'clientInfo': {'name': 'chronicle_authorized_audit', 'version': '1'},
                                        'capabilities': {'experimentalApi': True}})
-        require(info.get('codexHome') == str(root), '连接的 daemon 不是目标 HOME')
-        agent = info.get('userAgent', '')
-        version = agent.split(' ', 1)[0].rsplit('/', 1)[-1]
-        # 0.169.0 改为 opportunistic stale-lock 清扫，但仍使用同一协调锁和目标锁；当前六库指纹保持兼容。
-        require(version in ('0.166.0', '0.167.0', '0.167.2', '0.169.0'), 'daemon 版本未经本轮锁协议审阅: ' + agent)
+        # 版本号不作为门禁；后续仍须校验加载列表、会话锁、文件占用和数据库结构。
+        require(isinstance(info, dict) and info.get('codexHome') == str(root), '连接的 daemon 不是目标 HOME')
         self.send({'method': 'initialized', 'params': {}})
 
     def read(self, n):
@@ -222,14 +225,16 @@ class Daemon:
         result, cursor, seen = set(), None, set()
         for _ in range(100):
             page = self.rpc('thread/loaded/list', {'cursor': cursor, 'limit': 100})
-            require(isinstance(page.get('data'), list), '未知 loaded/list 响应')
+            require(isinstance(page, dict) and isinstance(page.get('data'), list) and 'nextCursor' in page,
+                    '无法核对 Codex 的已加载会话：loaded/list 响应结构已改变')
             for value in page['data']:
-                tid = value if isinstance(value, str) else value.get('id')
-                require(isinstance(tid, str), '无法识别已加载会话')
+                tid = value.get('id') if isinstance(value, dict) else value
+                require(isinstance(tid, str) and THREAD_ID.fullmatch(tid), '无法识别已加载会话的 ID')
                 result.add(tid)
-            cursor = page.get('nextCursor')
+            cursor = page['nextCursor']
             if cursor is None:
                 return result
+            require(isinstance(cursor, str) and cursor, '无法识别 loaded/list 游标')
             require(cursor not in seen, 'loaded/list 游标重复')
             seen.add(cursor)
         raise RuntimeError('loaded/list 分页超限')
@@ -260,6 +265,31 @@ def schema_hash(conn):
     rows = conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").fetchall()
     # 和预登记摘要保持相同的数组顺序，不使用本项目 Go 指纹的命名或算法。
     return sha(json.dumps(rows, ensure_ascii=True, separators=(',', ':')).encode())
+
+
+def reviewed_schema(name, digest):
+    return name in SCHEMAS and digest in (SCHEMAS[name], REVIEWED_SCHEMA_VARIANTS.get(name, SCHEMAS[name]))
+
+
+def validate_schemas(schemas):
+    require(isinstance(schemas, dict) and schemas.keys() == SCHEMAS.keys() and
+            all(reviewed_schema(name, digest) for name, digest in schemas.items()),
+            '预览或恢复材料中有未审阅的数据库结构')
+
+
+def check_schema(conn, name, expected=None):
+    digest = schema_hash(conn)
+    require(reviewed_schema(name, digest), '未知 schema: ' + name)
+    require(expected is None or digest == expected, '数据库结构与预览或恢复材料不一致: ' + name)
+    return digest
+
+
+def source_schemas(root, expected=None):
+    result = {}
+    for name in SCHEMAS:
+        with contextlib.closing(connect(safe(root, name))) as conn:
+            result[name] = check_schema(conn, name, expected[name] if expected is not None else None)
+    return result
 
 
 def cell(value):
@@ -424,7 +454,8 @@ def check_family(root, plan, completed=()):
     targets, done = set(plan['ids']), set(completed)
     watched = set(family['watch_ids'])
     with contextlib.closing(connect(safe(root, 'state_5.sqlite'))) as conn:
-        require(schema_hash(conn) == SCHEMAS['state_5.sqlite'], '关系检查时 schema 变化')
+        conn.execute('BEGIN')
+        check_schema(conn, 'state_5.sqlite', plan['schemas']['state_5.sqlite'])
         parents, kinds, _, thread_ids = spawn_index(root, conn)
     edges = sorted([parent, child] for child, values in parents.items() for parent in values
                    if child in watched or parent in targets)
@@ -633,7 +664,7 @@ def probe_writer_locks(root, ids):
 
 @contextlib.contextmanager
 def locks(root, ids):
-    """遵循 0.169 的 coordination → 每目标 .lock 协议；不清扫其他会话的锁。"""
+    """遵循已审阅的 coordination → 每目标 .lock 协议；不清扫其他会话的锁。"""
     held = []
     directory = safe(root, 'thread-writer-locks')
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -669,7 +700,7 @@ def text_lock(root, name):
         yield f
 
 
-def activity(root, real, socket_path, ids, assets):
+def check_daemon(root, real, socket_path, ids):
     loaded = []
     if real or socket_path:
         require(socket_path, '真实执行必须连接现有 daemon 核实 loaded/list')
@@ -679,6 +710,11 @@ def activity(root, real, socket_path, ids, assets):
         finally:
             daemon.close()
         require(not set(ids) & set(loaded), '目标或关联父会话仍被 daemon 加载: ' + ','.join(sorted(set(ids) & set(loaded))))
+    return loaded
+
+
+def activity(root, real, socket_path, ids, assets):
+    loaded = check_daemon(root, real, socket_path, ids)
     not_open(root, assets)
     return {'loaded_ids': loaded, 'checked_at': time.time()}
 
@@ -686,16 +722,22 @@ def activity(root, real, socket_path, ids, assets):
 def prepare(root, ids, work, socket_path, all_conversations=False, operation='trash'):
     require(operation == 'trash' or (operation == 'permanent_delete' and all_conversations), '当前模式不允许永久删除')
     root, real = validate_scope(root, ids, all_conversations)
+    schemas = source_schemas(root)
     # 缺失目标应在复制六库之前拒绝，避免无效预览产生大恢复包。
     with contextlib.closing(connect(safe(root, 'state_5.sqlite'))) as conn:
-        require(schema_hash(conn) == SCHEMAS['state_5.sqlite'], '未知 schema: state_5.sqlite')
+        conn.execute('BEGIN')
+        check_schema(conn, 'state_5.sqlite', schemas['state_5.sqlite'])
         marks = ','.join('?' for _ in ids)
         found = {r[0] for r in conn.execute('SELECT id FROM threads WHERE id IN (' + marks + ')', ids)}
-        require(found == set(ids), '目标线程已不存在，请刷新会话库；没有创建恢复包')
+        missing = sorted(set(ids) - found)
+        require(not missing, '所选 ID 在会话数据库中不存在: ' + ','.join(missing) +
+                '。会话库可能已过期或身份识别不一致，请刷新后重新选择；已在备份和写入前停止。')
         family = family_scope(root, conn, ids)
     ids = family['ids']
     validate_scope(root, ids, all_conversations)
     probe_writer_locks(root, family['watch_ids'])
+    check_daemon(root, real, socket_path, family['watch_ids'])
+    auxiliary = check_auxiliary(root, ids)
     work = pathlib.Path(work).absolute()
     require(root != work and root not in work.parents, '恢复材料必须放在源目录之外')
     require(not work.exists(), '预览目录已存在，拒绝覆盖')
@@ -704,11 +746,11 @@ def prepare(root, ids, work, socket_path, all_conversations=False, operation='tr
     backup = work / 'backup'
     backup.mkdir(mode=0o700)
     sync_dir(work)
-    auxiliary = check_auxiliary(root, ids)
     database_rows, baselines, db_backups = {}, {}, {}
-    for name, expected in SCHEMAS.items():
+    for name, expected in schemas.items():
         with contextlib.closing(connect(safe(root, name))) as conn:
-            require(schema_hash(conn) == expected, '未知 schema: ' + name)
+            conn.execute('BEGIN')
+            check_schema(conn, name, expected)
             check_relations(conn, name, ids)
             with contextlib.closing(sqlite3.connect(backup / name)) as dest:
                 conn.backup(dest)
@@ -717,7 +759,7 @@ def prepare(root, ids, work, socket_path, all_conversations=False, operation='tr
             os.fsync(f.fileno())
         sync_dir(backup)
         with contextlib.closing(connect(backup / name)) as conn:
-            require(schema_hash(conn) == expected, '备份 schema 漂移: ' + name)
+            check_schema(conn, name, expected)
             check_relations(conn, name, ids)
             require(conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)], '备份完整性失败: ' + name)
             require(not conn.execute('PRAGMA foreign_key_check').fetchall(), '备份外键检查失败: ' + name)
@@ -758,7 +800,7 @@ def prepare(root, ids, work, socket_path, all_conversations=False, operation='tr
             'scope': 'all_conversations' if all_conversations else 'legacy_ids', 'operation': operation,
             'source_root': str(source_root), 'real': real, 'ids': ids, 'socket': socket_path,
             'family': family,
-            'assets': assets, 'metadata': metadata, 'texts': texts, 'schemas': SCHEMAS,
+            'assets': assets, 'metadata': metadata, 'texts': texts, 'schemas': schemas,
             'sqlite_preview': sqlite_preview,
             'auxiliary_sqlite': auxiliary,
             'database_backups': db_backups, 'non_target_baselines': baselines, 'activity': probe,
@@ -787,7 +829,8 @@ def load_plan(work, all_conversations=False):
     data = regular(work / 'plan.json').read_bytes()
     require(sha(data) == (work / 'plan.sha256').read_text(), '影响预览损坏')
     plan = json.loads(data)
-    require(plan['kind'] == KIND and plan['schemas'] == SCHEMAS, '预览类型或 schema 不匹配')
+    require(plan['kind'] == KIND, '预览类型不匹配')
+    validate_schemas(plan['schemas'])
     general = plan.get('scope', 'legacy_ids') == 'all_conversations'
     require(plan.get('scope', 'legacy_ids') in ('legacy_ids', 'all_conversations') and
             (not general or all_conversations), '此预览需要全会话执行模式，不能通过旧入口扩大权限')
@@ -1064,11 +1107,11 @@ def restore_trash_package(work, plan, journal, binary, folder, injected=None):
         require(not target.exists() or fingerprint(target)['sha256'] == asset['sha256'], '恢复文件冲突')
     for name, groups in rows.items():
         if groups:
-            mutate_db(safe(root, name), name, plan['ids'], groups, restore=True, dry_run=True)
+            mutate_db(safe(root, name), name, plan['ids'], groups, plan['schemas'][name], restore=True, dry_run=True)
     save_journal(work, journal, 'restoring')
     for name, groups in rows.items():
         if groups:
-            check = mutate_db(safe(root, name), name, plan['ids'], groups, restore=True)
+            check = mutate_db(safe(root, name), name, plan['ids'], groups, plan['schemas'][name], restore=True)
             save_journal(work, journal, step={'type': 'db_restored', **check})
     for name, text in texts.items():
         restore_package_text(work, plan, journal, name, text, injected=injected)
@@ -1080,8 +1123,10 @@ def restore_trash_package(work, plan, journal, binary, folder, injected=None):
             bridge(binary, 'restore', plan, receipt=receipt)
         require(fingerprint(target)['sha256'] == asset['sha256'], '恢复文件校验失败')
         sync_dir(target.parent)
-    for name in SCHEMAS:
+    for name, expected in plan['schemas'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
+            conn.execute('BEGIN')
+            check_schema(conn, name, expected)
             require(rows_snapshot(conn, plan['ids']) == rows[name], '回收记录恢复不完整')
             require(conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)], '恢复后完整性失败')
             require(not conn.execute('PRAGMA foreign_key_check').fetchall(), '恢复后外键失败')
@@ -1124,21 +1169,21 @@ def preflight(work, plan, rows):
     for name, text in plan['texts'].items():
         with text_lock(root, name):
             require(sha(regular(safe(root, name)).read_bytes()) == text['before_sha256'], '共享索引已变化，须重新预览: ' + name)
-    for name in SCHEMAS:
+    for name, expected in plan['schemas'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
             conn.execute('BEGIN')
-            require(schema_hash(conn) == SCHEMAS[name], 'schema 已变化: ' + name)
+            check_schema(conn, name, expected)
             check_relations(conn, name, plan['ids'])
             require(rows_snapshot(conn, plan['ids']) == rows[name], '目标数据库行已变化: ' + name)
     return probe
 
 
-def mutate_db(path, name, ids, expected_rows, restore=False, dry_run=False):
+def mutate_db(path, name, ids, expected_rows, expected_schema, restore=False, dry_run=False):
     start = time.monotonic()
     with contextlib.closing(connect(path, True)) as conn:
         conn.execute('BEGIN IMMEDIATE')
         try:
-            require(schema_hash(conn) == SCHEMAS[name], '事务内 schema 不匹配: ' + name)
+            check_schema(conn, name, expected_schema)
             check_relations(conn, name, ids)
             before = digest_others(conn, ids)
             current = rows_snapshot(conn, ids)
@@ -1220,6 +1265,8 @@ def execute(work, binary=None, dry_run=False, recover=False, injected=None, all_
         require(plan.get('operation', 'trash') == 'permanent_delete' or
                 (binary and pathlib.Path(binary).is_file()), '缺少项目原生回收站 bridge')
         require(journal['phase'] in (('prepared',) if not recover else ('applying', 'needs_review', 'committed', 'restoring', 'stopped')), 'journal 状态不允许此操作')
+    check_daemon(root, plan['real'], plan['socket'], watch_ids(plan))
+    source_schemas(root, plan['schemas'])
     with locks(root, watch_ids(plan)):
         if recover and journal.get('trash_package'):
             try:
@@ -1253,7 +1300,7 @@ def execute(work, binary=None, dry_run=False, recover=False, injected=None, all_
         if dry_run:
             for name, groups in rows.items():
                 if groups:
-                    checks.append(mutate_db(safe(root, name), name, plan['ids'], groups, dry_run=True))
+                    checks.append(mutate_db(safe(root, name), name, plan['ids'], groups, plan['schemas'][name], dry_run=True))
             save_journal(work, journal, step={'type': 'dry_run', 'checks': checks, 'activity': probe, 'at': time.time()})
             return {'dry_run': True, 'checks': checks}
         require(any(s['type'] == 'dry_run' for s in journal['steps']), '必须先完成 dry-run')
@@ -1307,7 +1354,7 @@ def execute(work, binary=None, dry_run=False, recover=False, injected=None, all_
                     if not selected_rows:
                         continue
                     save_journal(work, journal, step={'type': 'db_intent', 'name': name})
-                    check = mutate_db(safe(root, name), name, selected, selected_rows)
+                    check = mutate_db(safe(root, name), name, selected, selected_rows, plan['schemas'][name])
                     checks.append(check)
                     save_journal(work, journal, step={'type': 'db_done', **check})
                     fault(plan, name, injected)
@@ -1336,7 +1383,7 @@ def restore(work, plan, rows, journal, binary):
     root = pathlib.Path(plan['root'])
     for name, groups in rows.items():
         if groups:
-            check = mutate_db(safe(root, name), name, plan['ids'], groups, restore=True)
+            check = mutate_db(safe(root, name), name, plan['ids'], groups, plan['schemas'][name], restore=True)
             save_journal(work, journal, step={'type': 'db_restored', **check})
     for name, text in plan['texts'].items():
         before = (work / 'backup' / name).read_bytes()
@@ -1393,8 +1440,10 @@ def restore(work, plan, rows, journal, binary):
         require(fingerprint(target)['sha256'] == asset['sha256'], '恢复文件校验失败')
         sync_dir(target.parent)
         save_journal(work, journal, step={'type': 'file_restored', 'relative': asset['relative']})
-    for name in SCHEMAS:
+    for name, expected in plan['schemas'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
+            conn.execute('BEGIN')
+            check_schema(conn, name, expected)
             require(rows_snapshot(conn, plan['ids']) == rows[name], '恢复结果不完整: ' + name)
             require(conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)], '恢复后完整性失败: ' + name)
             require(not conn.execute('PRAGMA foreign_key_check').fetchall(), '恢复后外键失败: ' + name)
@@ -1422,10 +1471,10 @@ def verify(work, all_conversations=False, completed_ids=None):
             require(ids == plan['ids'] and 'after_bytes' in text and sha(current[:text['after_bytes']]) == text['after_sha256'], '永久删除后的索引前缀无法核验')
         result['texts'][name] = {'non_target_prefix_kept': True, 'target_lines_removed': len(removed_lines),
                                 'source_bytes_removed': sum(line['end'] - line['start'] for line in removed_lines)}
-    for name in SCHEMAS:
+    for name, expected in plan['schemas'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
             conn.execute('BEGIN')
-            require(schema_hash(conn) == SCHEMAS[name], '验证时 schema 发生变化')
+            check_schema(conn, name, expected)
             require(not rows_snapshot(conn, ids), '数据库仍有目标行: ' + name)
             require(conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)], '完整性失败: ' + name)
             require(not conn.execute('PRAGMA foreign_key_check').fetchall(), '外键失败: ' + name)
@@ -1451,16 +1500,19 @@ def make_copy(work, destination, all_conversations=False):
 # 中文说明：云备份复用已审阅的归属与活动门禁，仅读取目标行；绝不复制共享整库或执行源写入。
 def backup_snapshot(root, requested, socket_path):
     root, real = validate_scope(root, requested, True)
+    schemas = source_schemas(root)
     with contextlib.closing(connect(safe(root, 'state_5.sqlite'))) as conn:
-        require(schema_hash(conn) == SCHEMAS['state_5.sqlite'], '未知 schema: state_5.sqlite')
+        conn.execute('BEGIN')
+        check_schema(conn, 'state_5.sqlite', schemas['state_5.sqlite'])
         family = family_scope(root, conn, requested)
     ids = family['ids']
     probe_writer_locks(root, family['watch_ids'])
+    check_daemon(root, real, socket_path, family['watch_ids'])
     databases = {}
-    for name, expected in SCHEMAS.items():
+    for name, expected in schemas.items():
         with contextlib.closing(connect(safe(root, name))) as conn:
             conn.execute('BEGIN')
-            require(schema_hash(conn) == expected, '未知 schema: ' + name)
+            check_schema(conn, name, expected)
             check_relations(conn, name, ids)
             databases[name] = {'schema_sha256': expected, 'rows': rows_snapshot(conn, ids),
                                'schema': conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").fetchall()}
@@ -1532,11 +1584,11 @@ def merge_text_records(data, key, ids, replacement):
     return b''.join(output)
 
 
-def replace_db_rows(path, name, ids, expected_rows, replacement_rows):
+def replace_db_rows(path, name, ids, expected_rows, replacement_rows, expected_schema):
     with contextlib.closing(connect(path, True)) as conn:
         conn.execute('BEGIN IMMEDIATE')
         try:
-            require(schema_hash(conn) == SCHEMAS[name], '更新事务内 schema 不匹配: ' + name)
+            check_schema(conn, name, expected_schema)
             check_relations(conn, name, ids)
             before = digest_others(conn, ids)
             current = rows_snapshot(conn, ids)
@@ -1605,10 +1657,11 @@ def update_restore_backup(root, exported, work, snapshot, current_state, journal
                        'mode': source.stat().st_mode & 0o777,
                        'sha256': before['sha256'], 'bytes': before['bytes']})
     databases = {}
-    for name in SCHEMAS:
+    for name, archived in snapshot['databases'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
-            require(schema_hash(conn) == SCHEMAS[name], '更新前 schema 变化: ' + name)
-            databases[name] = {'schema_sha256': SCHEMAS[name], 'rows': rows_snapshot(conn, snapshot['ids'])}
+            conn.execute('BEGIN')
+            digest = check_schema(conn, name, archived['schema_sha256'])
+            databases[name] = {'schema_sha256': digest, 'rows': rows_snapshot(conn, snapshot['ids'])}
     indexes = {}
     for name, key in TEXT_FILES.items():
         data = regular(safe(root, name)).read_bytes()
@@ -1633,6 +1686,10 @@ def restore_update_before(root, exported, work, journal):
     before = journal.get('update_before')
     require(before and before.get('ids'), '更新 journal 缺少旧版本恢复材料')
     ids = before['ids']
+    archived = load_archive_snapshot(root, exported)[3]
+    schemas = archive_schemas(archived)
+    require(archive_schemas(before) == schemas, '更新回滚材料的数据库结构与归档不一致')
+    source_schemas(root, schemas)
     # 文件替换采用同目录临时文件和 os.replace，恢复可重复执行。
     for asset in before['assets']:
         target = safe(root, asset['relative'])
@@ -1647,11 +1704,10 @@ def restore_update_before(root, exported, work, journal):
         os.chmod(temporary, asset['mode'])
         os.replace(temporary, target)
         sync_dir(target.parent)
-    archived = load_archive_snapshot(root, exported)[3]
-    for name in sorted(SCHEMAS, key=lambda item: 0 if item == 'state_5.sqlite' else 1):
+    for name in sorted(schemas, key=lambda item: 0 if item == 'state_5.sqlite' else 1):
         expected = archived['databases'][name]['rows']
         replacement = before['databases'][name]['rows']
-        replace_db_rows(safe(root, name), name, ids, expected, replacement)
+        replace_db_rows(safe(root, name), name, ids, expected, replacement, schemas[name])
     for name, key in TEXT_FILES.items():
         replacement = base64.b64decode(before['indexes'][name]['content'], validate=True)
         expected = base64.b64decode(archived['indexes'][name]['content'], validate=True)
@@ -1717,11 +1773,11 @@ def apply_archive_update(root, exported, work, socket_path, snapshot, preview, i
             require(fingerprint(target)['sha256'] == asset['sha256'], '更新文件发布校验失败: ' + asset['relative'])
             save_journal(work, journal, step={'type': 'update_file_done', 'relative': asset['relative']})
             fault({'real': False}, 'update-file', injected)
-        for name in sorted(SCHEMAS, key=lambda item: 0 if item == 'state_5.sqlite' else 1):
+        for name in sorted(snapshot['databases'], key=lambda item: 0 if item == 'state_5.sqlite' else 1):
             old = before['databases'][name]['rows']
             new = target_databases[name]
             if old or new:
-                replace_db_rows(safe(root, name), name, ids, old, new)
+                replace_db_rows(safe(root, name), name, ids, old, new, snapshot['databases'][name]['schema_sha256'])
             save_journal(work, journal, step={'type': 'update_db_done', 'name': name})
             fault({'real': False}, 'update-db-' + name, injected)
         for name, key in TEXT_FILES.items():
@@ -1772,6 +1828,10 @@ def backup_export(root, ids, work, socket_path, expected):
         shutil.rmtree(work)
         raise
 
+def archive_schemas(snapshot):
+    return {name: db['schema_sha256'] for name, db in snapshot['databases'].items()}
+
+
 # 中文说明：完整归档只按专属行恢复；重复副本识别为已存在，变更或来源不明的部分状态拒绝覆盖。
 def load_archive_snapshot(root, exported):
     exported = safe(pathlib.Path(exported).absolute(), '.')
@@ -1779,6 +1839,7 @@ def load_archive_snapshot(root, exported):
     require(len(raw) <= 128 * 1024 * 1024, '归档快照超出预算')
     snapshot = json.loads(raw)
     require(snapshot['kind'] == 'chronicle-cloud-snapshot-v1', '不支持的归档快照')
+    validate_schemas(archive_schemas(snapshot))
     root, real = validate_scope(root, snapshot['ids'], True)
     require(root != exported and root not in exported.parents and exported not in root.parents, '归档恢复材料与目标重叠')
     rows = {name: db['rows'] for name, db in snapshot['databases'].items()}
@@ -1806,6 +1867,7 @@ def archive_restore_preview(root, exported, socket_path, journal=None, locked=Fa
     activity(root, real, socket_path, watching, snapshot['assets'] + snapshot.get('family', {}).get('watch_assets', []))
     if journal and journal.get('kind') == 'chronicle-archive-update-v1' and \
             journal.get('phase') not in ('completed', 'update_rolled_back'):
+        source_schemas(root, archive_schemas(snapshot))
         check_auxiliary(root, ids)
         check_history_dependencies(root, ids)
         state_digest = sha(encoded(journal))
@@ -1839,10 +1901,10 @@ def archive_restore_preview(root, exported, socket_path, journal=None, locked=Fa
     for name, db in snapshot['databases'].items():
         with contextlib.closing(connect(safe(root, name))) as conn:
             conn.execute('BEGIN')
-            require(db['schema_sha256'] == schema_hash(conn) == SCHEMAS[name], '恢复 schema 不匹配: ' + name)
+            check_schema(conn, name, db['schema_sha256'])
             check_relations(conn, name, ids)
             current = rows_snapshot(conn, ids)
-            current_databases[name] = {'schema_sha256': schema_hash(conn), 'rows': current}
+            current_databases[name] = {'schema_sha256': db['schema_sha256'], 'rows': current}
             for group in db['rows']:
                 columns = conn.execute('PRAGMA table_info(' + quote(group['table']) + ')').fetchall()
                 require(group['columns'] == [c[1] for c in columns] and
@@ -1888,6 +1950,8 @@ def archive_restore_preview(root, exported, socket_path, journal=None, locked=Fa
             current_family = {'target_threads_missing': sorted(ids)}
         else:
             with contextlib.closing(connect(safe(root, 'state_5.sqlite'))) as conn:
+                conn.execute('BEGIN')
+                check_schema(conn, 'state_5.sqlite', snapshot['databases']['state_5.sqlite']['schema_sha256'])
                 current_family = family_scope(root, conn, snapshot.get('requested_ids', ids))
         if current_family != family:
             if actual_threads.intersection(ids):
@@ -1929,6 +1993,10 @@ def archive_restore_apply(root, exported, work, socket_path, expected, injected=
     require(not injected or not real, '真实恢复禁止故障注入')
     work = safe(pathlib.Path(work).absolute(), '.')
     require(root != work and root not in work.parents and work not in root.parents, '恢复日志必须独立于源')
+    watching = snapshot.get('family', {}).get('watch_ids', snapshot['ids'])
+    schemas = archive_schemas(snapshot)
+    check_daemon(root, real, socket_path, watching)
+    source_schemas(root, schemas)
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     journal_path = work / 'journal.json'
     journal = json.loads(regular(journal_path).read_bytes()) if journal_path.exists() else None
@@ -1938,7 +2006,6 @@ def archive_restore_apply(root, exported, work, socket_path, expected, injected=
             leftover = safe(work, 'update-before')
             if leftover.exists():
                 shutil.rmtree(leftover)
-    watching = snapshot.get('family', {}).get('watch_ids', snapshot['ids'])
     with locks(root, watching):
         if journal and journal.get('kind') == 'chronicle-archive-update-v1':
             phase = journal.get('phase')
@@ -1977,7 +2044,7 @@ def archive_restore_apply(root, exported, work, socket_path, expected, injected=
             return apply_archive_update(root, exported, work, socket_path, snapshot, preview, injected)
         require(preview['status'] == 'ready', '恢复被阻断: ' + preview['status'])
         rows = {name: db['rows'] for name, db in snapshot['databases'].items()}
-        checks = [mutate_db(safe(root, name), name, snapshot['ids'], groups, restore=True, dry_run=True)
+        checks = [mutate_db(safe(root, name), name, snapshot['ids'], groups, schemas[name], restore=True, dry_run=True)
                   for name, groups in rows.items() if groups]
         if journal is None:
             journal = {'kind': 'chronicle-archive-restore-v1', 'root': str(root), 'snapshot_sha256': digest,
@@ -2006,7 +2073,7 @@ def archive_restore_apply(root, exported, work, socket_path, expected, injected=
                 fault(plan, 'archive-file', injected)
             for name in sorted(rows, key=lambda n: 0 if n == 'state_5.sqlite' else 1):
                 if rows[name]:
-                    result = mutate_db(safe(root, name), name, snapshot['ids'], rows[name], restore=True)
+                    result = mutate_db(safe(root, name), name, snapshot['ids'], rows[name], schemas[name], restore=True)
                     save_journal(work, journal, step={'type': 'db_restored', **result})
                     fault(plan, 'archive-db-' + name, injected)
             for name, text in snapshot['indexes'].items():
@@ -2022,8 +2089,10 @@ def archive_restore_apply(root, exported, work, socket_path, expected, injected=
                 restore_package_text(work, plan, journal, name, text_plan, injected=injected)
             result = archive_restore_preview(root, exported, socket_path, locked=True)
             require(result['status'] == 'already_present', '恢复后校验未通过')
-            for name in SCHEMAS:
+            for name, expected_schema in schemas.items():
                 with contextlib.closing(connect(safe(root, name))) as conn:
+                    conn.execute('BEGIN')
+                    check_schema(conn, name, expected_schema)
                     require(conn.execute('PRAGMA integrity_check').fetchall() == [('ok',)], '恢复后完整性失败')
                     require(not conn.execute('PRAGMA foreign_key_check').fetchall(), '恢复后外键失败')
             journal.pop('restore_text_checkpoints', None)

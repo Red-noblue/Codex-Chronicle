@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -27,9 +28,53 @@ type LaunchOptions struct {
 	PackageRoot     string
 	DataDir         string
 	Address         string
+	AutoPort        bool
 	ScanRoot        string
 	StartupCheck    bool
 	ExpectedVersion string
+	UpdateFeedURL   string
+}
+
+// ActivePackageRoot 根据独立更新目录中的版本指针选择已激活载荷；没有激活版本时保留安装包本体。
+func ActivePackageRoot(packageRoot, dataDir string) (string, error) {
+	packageRoot, err := filepath.Abs(filepath.Clean(packageRoot))
+	if err != nil {
+		return "", err
+	}
+	dataDir, err = filepath.Abs(filepath.Clean(dataDir))
+	if err != nil {
+		return "", err
+	}
+	statePath := filepath.Join(dataDir, "updates", "install-state.json")
+	data, err := os.ReadFile(statePath)
+	if os.IsNotExist(err) {
+		return packageRoot, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var state struct {
+		ActiveVersion string `json:"active_version"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return "", fmt.Errorf("读取已激活更新版本失败：%w", err)
+	}
+	version := filepath.Clean(strings.TrimSpace(state.ActiveVersion))
+	if version == "." || version == "" {
+		return packageRoot, nil
+	}
+	if version != strings.TrimSpace(state.ActiveVersion) || strings.ContainsAny(version, `/\\`) || version == ".." {
+		return "", fmt.Errorf("已激活更新版本无效：%q", state.ActiveVersion)
+	}
+	active := filepath.Join(dataDir, "updates", "versions", version)
+	info, err := os.Lstat(active)
+	if err != nil {
+		return "", fmt.Errorf("已激活版本目录不可用：%w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("已激活版本路径不是目录")
+	}
+	return active, nil
 }
 
 func DefaultDataDir() (string, error) {
@@ -117,6 +162,18 @@ func DaemonArguments(options LaunchOptions, config Config) ([]string, error) {
 		"--remote-recovery-root", filepath.Join(options.DataDir, "remote-recovery"),
 		"--journal-root", filepath.Join(options.DataDir, "lifecycle"),
 	}
+	trustedKey := filepath.Join(options.PackageRoot, "update", "trusted-public-key")
+	if info, keyErr := os.Stat(trustedKey); keyErr == nil && info.Mode().IsRegular() {
+		args = append(args,
+			"--install-root", filepath.Join(options.DataDir, "updates"),
+			"--update-require-signature", "--update-trusted-public-key-file", trustedKey)
+		if strings.TrimSpace(options.UpdateFeedURL) != "" {
+			args = append(args, "--update-feed-url", options.UpdateFeedURL)
+		}
+	}
+	if options.AutoPort {
+		args = append(args, "--desktop-auto-port")
+	}
 	if options.StartupCheck {
 		args = append(args, "--desktop-start-paused")
 	}
@@ -175,7 +232,23 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 		if instance.StartupPaused && !options.StartupCheck {
 			return Instance{}, fmt.Errorf("后台仍在安装检查，尚未开放操作")
 		}
+		if !options.AutoPort && options.Address != "" && options.Address != "127.0.0.1:0" && instance.URL != "http://"+options.Address {
+			return Instance{}, fmt.Errorf("已有后台运行于 %s，与显式指定的地址 %s 不同；请先安全退出已有后台", instance.URL, options.Address)
+		}
+		if err := instance.CheckHealth(ctx); err != nil {
+			return Instance{}, err
+		}
 		return instance, nil
+	}
+	options, err = resolveUpdatePackage(ctx, options)
+	if err != nil {
+		return Instance{}, err
+	}
+	if options.AutoPort {
+		options.Address, options.AutoPort, err = StartupAddress(options.DataDir)
+		if err != nil {
+			return Instance{}, err
+		}
 	}
 	config, err := LoadConfig(options.DataDir)
 	if err != nil {
@@ -222,8 +295,14 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 			if instance.PID == command.Process.Pid && instance.Version == "" {
 				return Instance{}, fmt.Errorf("后台缺少版本标识")
 			}
-			if options.StartupCheck && (instance.Version != options.ExpectedVersion || !instance.StartupPaused) {
+			if options.ExpectedVersion != "" && instance.Version != options.ExpectedVersion {
+				return Instance{}, fmt.Errorf("后台版本 %s 与所选载荷 %s 不符", instance.Version, options.ExpectedVersion)
+			}
+			if options.StartupCheck && !instance.StartupPaused {
 				return Instance{}, fmt.Errorf("候选版本身份或暂停状态不符")
+			}
+			if err := instance.CheckHealth(ctx); err != nil {
+				return Instance{}, err
 			}
 			return instance, nil
 		}
@@ -233,7 +312,10 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 		select {
 		case <-ctx.Done():
 			return Instance{}, fmt.Errorf("等待后台启动超时；日志：%s：%w", logPath, ctx.Err())
-		case <-done:
+		case exitErr := <-done:
+			if exitErr != nil {
+				return Instance{}, fmt.Errorf("后台未能在 %s 启动：%w；请查看：%s", options.Address, exitErr, logPath)
+			}
 			exitedAt = time.Now()
 		case <-ticker.C:
 		}

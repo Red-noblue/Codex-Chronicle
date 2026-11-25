@@ -18,8 +18,8 @@ import authorized_live as live
 
 
 class DaemonCompatibilityTests(unittest.TestCase):
-    def handshake(self, agent, wrong_home=False):
-        # 中文说明：隔离 socket 验证真实构造函数中的版本与 HOME 门禁，不连接用户 daemon。
+    def check_daemon(self, agent, pages, targets=(), wrong_home=False):
+        # 中文说明：隔离 socket 验证握手、加载列表和活动门禁，不连接用户 daemon。
         with tempfile.TemporaryDirectory(prefix='chronicle-daemon-') as temporary:
             root = pathlib.Path(temporary)
             address = str(root / 'daemon.sock')
@@ -33,25 +33,32 @@ class DaemonCompatibilityTests(unittest.TestCase):
                 with patch.object(live.socket, 'socket', return_value=Mock()), \
                         patch.object(live.os, 'urandom', return_value=random), \
                         patch.object(live.Daemon, 'read', side_effect=[bytes([b]) for b in header]), \
-                        patch.object(live.Daemon, 'rpc', return_value=info), \
+                        patch.object(live.Daemon, 'rpc', side_effect=[info, *pages]), \
                         patch.object(live.Daemon, 'send') as send:
-                    daemon = live.Daemon(address, root)
+                    loaded = live.check_daemon(root, True, address, targets)
                     send.assert_called_once_with({'method': 'initialized', 'params': {}})
-                    daemon.close()
+                    return loaded
 
-    def test_reviewed_exact_versions_accept_full_user_agent(self):
-        for version in ('0.166.0', '0.167.0', '0.167.2', '0.169.0'):
+    def test_matching_protocol_accepts_old_and_future_versions(self):
+        for version in ('0.166.0', '0.171.0', '0.172.1', '1.0.0-beta.2'):
             with self.subTest(version=version):
-                self.handshake('codex-tui/' + version + ' (Mac OS 26.5.1; arm64) vscode/1.99.3 (chronicle_authorized_audit; 1)')
+                agent = 'codex-tui/' + version + ' (Mac OS 26.5.1; arm64)'
+                self.assertEqual(self.check_daemon(agent, [{'data': [], 'nextCursor': None}]), [])
 
-    def test_unaudited_patch_minor_and_prerelease_remain_blocked(self):
-        for version in ('0.167.1', '0.167.3', '0.168.0', '0.169.1', '0.169.0-preview', '0.170.0', ''):
-            with self.subTest(version=version), self.assertRaisesRegex(RuntimeError, '版本未经'):
-                self.handshake('codex-cli/' + version)
+    def test_future_version_cannot_hide_a_loaded_target(self):
+        tid = sorted(live.ALLOWED_IDS)[0]
+        pages = [{'data': [], 'nextCursor': 'another-page'}, {'data': [{'id': tid}], 'nextCursor': None}]
+        with self.assertRaisesRegex(RuntimeError, '仍被 daemon 加载'):
+            self.check_daemon('codex-tui/1.0.0', pages, [tid])
 
-    def test_reviewed_version_does_not_allow_a_different_home(self):
+    def test_future_version_does_not_allow_a_different_home(self):
         with self.assertRaisesRegex(RuntimeError, '不是目标 HOME'):
-            self.handshake('codex-tui/0.167.2', wrong_home=True)
+            self.check_daemon('codex-tui/1.0.0', [], wrong_home=True)
+
+    def test_incompatible_loaded_list_is_blocked(self):
+        for page in ({'threads': [], 'nextCursor': None}, {'data': []}, {'data': ['unknown-id'], 'nextCursor': None}):
+            with self.subTest(page=page), self.assertRaisesRegex(RuntimeError, '已加载会话'):
+                self.check_daemon('codex-tui/1.0.0', [page])
 
 
 class AuthorizedLiveTests(unittest.TestCase):
@@ -248,7 +255,7 @@ class AuthorizedLiveTests(unittest.TestCase):
         with contextlib.closing(live.connect(p, True)) as holder:
             holder.execute('BEGIN IMMEDIATE')
             with self.assertRaises(sqlite3.OperationalError):
-                live.mutate_db(p, p.name, self.ids, rows[p.name])
+                live.mutate_db(p, p.name, self.ids, rows[p.name], plan['schemas'][p.name])
             holder.rollback()
         live.preflight(self.work, plan, rows)
 
@@ -337,6 +344,41 @@ class AuthorizedLiveTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'spawn'):
             live.preflight(self.work, plan, rows)
 
+    def test_reviewed_schema_upgrade_invalidates_old_plan_and_preserves_model_ids(self):
+        exported, _ = self.archive_from_root(self.root, 'before-schema-upgrade')
+        live.execute(self.work, dry_run=True)
+        name = 'state_5.sqlite'
+        with contextlib.closing(sqlite3.connect(self.root / name)) as conn, conn:
+            conn.execute('CREATE TABLE session_model_ids(session_id TEXT, kind TEXT, external_key TEXT,'
+                         'PRIMARY KEY(session_id,kind,external_key))')
+            conn.executemany('INSERT INTO session_model_ids VALUES (?,?,?)',
+                             [(tid, 'test', 'same-key') for tid in (self.target, self.other)])
+            new_schema = live.schema_hash(conn)
+
+        def model_ids():
+            with contextlib.closing(live.connect(self.root / name)) as conn:
+                return {row[0] for row in conn.execute('SELECT session_id FROM session_model_ids')}
+
+        with patch.dict(live.REVIEWED_SCHEMA_VARIANTS, {name: new_schema}):
+            with self.assertRaisesRegex(RuntimeError, '数据库结构与预览或恢复材料不一致'):
+                live.execute(self.work, self.bridge_binary)
+            with self.assertRaisesRegex(RuntimeError, '数据库结构与预览或恢复材料不一致'):
+                live.archive_restore_preview(self.root, exported, None)
+            self.assertEqual(model_ids(), {self.target, self.other})
+            self.assertTrue((self.root / 'sessions' / ('rollout-' + self.target + '.jsonl')).exists())
+
+            current = self.base / 'after-schema-upgrade'
+            live.prepare(self.root, self.ids, current, None)
+            _, plan, _ = live.load(current)
+            self.assertEqual(plan['schemas'][name], new_schema)
+            table = next(p for p in plan['sqlite_preview'] if p['table'] == 'session_model_ids')
+            self.assertEqual(table['rows'], [{'owner': self.target, 'primary_key': [self.target, 'test', 'same-key']}])
+            live.execute(current, dry_run=True)
+            live.execute(current, self.bridge_binary)
+            self.assertEqual(model_ids(), {self.other})
+            live.execute(current, self.bridge_binary, recover=True)
+            self.assertEqual(model_ids(), {self.target, self.other})
+
     def test_trigger_cannot_modify_non_target_rows(self):
         _, _, rows = live.load(self.work)
         p = self.root / 'state_5.sqlite'
@@ -345,7 +387,7 @@ class AuthorizedLiveTests(unittest.TestCase):
             # 即使某个 schema 被错误登记，独立的非目标摘要门禁仍会阻止副作用提交。
             live.SCHEMAS[p.name] = live.schema_hash(conn)
         with self.assertRaisesRegex(RuntimeError, '非目标'):
-            live.mutate_db(p, p.name, self.ids, rows[p.name])
+            live.mutate_db(p, p.name, self.ids, rows[p.name], live.SCHEMAS[p.name])
         with contextlib.closing(sqlite3.connect(p)) as conn, conn:
             self.assertEqual(conn.execute('SELECT title FROM threads WHERE id=?', (self.other,)).fetchone()[0], self.other)
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM threads').fetchone()[0], 2)
@@ -356,6 +398,69 @@ class AuthorizedLiveTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '恢复材料损坏'):
             live.execute(self.work, dry_run=True)
         self.assertTrue((self.root / 'sessions' / ('rollout-' + self.target + '.jsonl')).exists())
+
+    def test_missing_thread_is_reported_before_creating_recovery_materials(self):
+        with contextlib.closing(sqlite3.connect(self.root / 'state_5.sqlite')) as conn, conn:
+            conn.execute('DELETE FROM threads WHERE id=?', (self.target,))
+        before = self.baseline()
+        rollout = self.root / 'sessions' / ('rollout-' + self.target + '.jsonl')
+        body = rollout.read_bytes()
+        work = self.base / 'missing-thread-preview'
+        with patch.object(live, 'durable_copy') as copy, \
+                patch.object(live, 'probe_writer_locks') as locks, \
+                self.assertRaisesRegex(RuntimeError, '所选 ID 在会话数据库中不存在') as error:
+            live.prepare(self.root, self.ids, work, None)
+        self.assertIn(self.target, str(error.exception))
+        self.assertIn('备份和写入前停止', str(error.exception))
+        copy.assert_not_called()
+        locks.assert_not_called()
+        self.assertFalse(work.exists())
+        self.assertEqual(rollout.read_bytes(), body)
+        self.assertEqual(self.baseline(), before)
+
+    def test_fork_history_does_not_expand_delete_scope_to_ancestor(self):
+        rollout = self.root / 'sessions' / ('rollout-' + self.target + '.jsonl')
+        rollout.write_bytes(b'\n'.join([
+            live.encoded({'type': 'session_meta', 'payload': {'id': self.target, 'forked_from_id': self.other}}),
+            live.encoded({'type': 'session_meta', 'payload': {'id': self.other}}),
+            live.encoded({'type': 'event_msg', 'payload': {'type': 'user_message', 'message': '继承的提问'}}),
+        ]) + b'\n')
+        before = self.baseline()
+        ancestor = self.root / 'sessions' / ('rollout-' + self.other + '.jsonl')
+        ancestor_body = ancestor.read_bytes()
+        work = self.base / 'fork-preview'
+        plan = live.prepare(self.root, self.ids, work, None)
+        self.assertEqual(plan['ids'], self.ids)
+        self.assertEqual(plan['metadata'][0]['forked_from_id'], self.other)
+        self.assertEqual({a['id'] for a in plan['assets']}, set(self.ids))
+        live.execute(work, dry_run=True)
+        live.execute(work, self.bridge_binary)
+        self.assertFalse(rollout.exists())
+        self.assertEqual(ancestor.read_bytes(), ancestor_body)
+        self.assertEqual(self.baseline(), before)
+        live.execute(work, self.bridge_binary, recover=True)
+        self.assertTrue(rollout.exists())
+        self.assertEqual(self.baseline(), before)
+
+    def test_thread_disappearing_after_initial_check_cannot_publish_plan(self):
+        before = self.baseline()
+        rollout = self.root / 'sessions' / ('rollout-' + self.target + '.jsonl')
+        body = rollout.read_bytes()
+        work = self.base / 'disappeared-during-preview'
+        original = live.check_auxiliary
+
+        def remove_after_check(root, ids):
+            with contextlib.closing(sqlite3.connect(root / 'state_5.sqlite')) as conn, conn:
+                conn.execute('DELETE FROM threads WHERE id=?', (self.target,))
+            return original(root, ids)
+
+        with patch.object(live, 'check_auxiliary', side_effect=remove_after_check), \
+                self.assertRaisesRegex(RuntimeError, '数据库缺少目标线程'):
+            live.prepare(self.root, self.ids, work, None)
+        self.assertFalse((work / 'journal.json').exists())
+        self.assertFalse((work / 'plan.json').exists())
+        self.assertEqual(rollout.read_bytes(), body)
+        self.assertEqual(self.baseline(), before)
 
     def general_plan(self, count=1, operation='trash'):
         ids = [str(uuid.uuid4()) for _ in range(count)]
@@ -848,7 +953,7 @@ class AuthorizedLiveTests(unittest.TestCase):
         live.backup_export(self.root, self.ids, exported, None, live.backup_preview(snapshot)['digest'])
         for name, db in snapshot['databases'].items():
             if db['rows']:
-                live.mutate_db(self.root / name, name, self.ids, db['rows'])
+                live.mutate_db(self.root / name, name, self.ids, db['rows'], db['schema_sha256'])
         for name, key in live.TEXT_FILES.items():
             (self.root / name).write_bytes(live.filter_text((self.root / name).read_bytes(), key, self.ids)[0])
         for asset in snapshot['assets']:
@@ -864,7 +969,7 @@ class AuthorizedLiveTests(unittest.TestCase):
     def restore_archive_fixture(self, exported, snapshot, work):
         for name, database in snapshot['databases'].items():
             if database['rows']:
-                live.mutate_db(self.root / name, name, self.ids, database['rows'])
+                live.mutate_db(self.root / name, name, self.ids, database['rows'], database['schema_sha256'])
         for name, key in live.TEXT_FILES.items():
             path = self.root / name
             path.write_bytes(live.filter_text(path.read_bytes(), key, self.ids)[0])

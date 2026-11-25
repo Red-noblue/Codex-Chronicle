@@ -29,6 +29,7 @@ func TestReaderCandidatesStayWithinHistoryAndLocateFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	enableSearchIndex(t, s)
 	if _, err = s.SyncInventory(t.Context(), report); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +62,7 @@ func TestProjectionCacheRestoresAndDerivedCleanupInvalidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	enableSearchIndex(t, s)
 	if _, err = s.SyncInventory(t.Context(), report); err != nil {
 		t.Fatal(err)
 	}

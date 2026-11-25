@@ -124,6 +124,7 @@ func (s *Server) buildRestrictedBatch(ctx context.Context, request batchOperatio
 		} `json:"assets"`
 		Metadata      json.RawMessage `json:"metadata"`
 		Texts         json.RawMessage `json:"texts"`
+		Schemas       json.RawMessage `json:"schemas"`
 		SQLitePreview json.RawMessage `json:"sqlite_preview"`
 		Auxiliary     json.RawMessage `json:"auxiliary_sqlite"`
 		Protected     json.RawMessage `json:"protected"`
@@ -153,7 +154,7 @@ func (s *Server) buildRestrictedBatch(ctx context.Context, request batchOperatio
 		return response, fmt.Errorf("子代理集合不一致，请重新扫描")
 	}
 	response.RestrictedPreview = map[string]any{"conversation_ids": plan.IDs, "family": plan.Family, "assets": plan.Assets, "session_thread_relations": plan.Metadata,
-		"text_lines": plan.Texts, "sqlite_objects_and_rows": plan.SQLitePreview, "auxiliary_sqlite": plan.Auxiliary,
+		"text_lines": plan.Texts, "sqlite_objects_and_rows": plan.SQLitePreview, "sqlite_schema_fingerprints": plan.Schemas, "auxiliary_sqlite": plan.Auxiliary,
 		"shared_and_protected": plan.Protected, "activity": plan.Activity, "recovery_path": work,
 		"permanent_delete": request.PermanentDelete, "purge_recovery_on_success": true, "trash_package": plan.TrashPackage,
 		"limitations": "按子代理优先顺序处理完整后代；附件、共享资产或关系不完整时拒绝执行。SQLite 仅删除专属行和目标子代理的关联边。"}
@@ -163,10 +164,10 @@ func (s *Server) buildRestrictedBatch(ctx context.Context, request batchOperatio
 		if request.PermanentDelete {
 			action = lifecycle.ActionPermanentDelete
 		}
-		adapterID := "authorized-local-macos-reviewed-0.166-0.167-0.169"
+		adapterID := "authorized-local-macos-reviewed"
 		compensation := "目标文件、数据库行和索引记录集中移入一个回收文件夹；成功后清理临时备份"
 		if config.AllConversations {
-			adapterID = "local-idle-macos-reviewed-0.166-0.167-0.169"
+			adapterID = "local-idle-macos-reviewed"
 		}
 		if request.PermanentDelete {
 			compensation = "全部成功后清理临时恢复正文；中断时保留材料供人工复核"

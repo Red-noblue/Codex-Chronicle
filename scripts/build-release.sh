@@ -6,10 +6,8 @@ chronicle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chronicle_version="${1:?用法：scripts/build-release.sh 0.1.0-preview.1 [darwin|windows|linux] [arm64|amd64]}"
 chronicle_os="${2:-$(go env GOOS)}"
 chronicle_arch="${3:-$(go env GOARCH)}"
-if [[ ! "$chronicle_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][a-zA-Z0-9.+-]+)?$ ]]; then
-  echo '版本必须采用 0.1.0 或 0.1.0-preview.1 形式' >&2
-  exit 1
-fi
+chronicle_default_feed_url="$(python3 "$chronicle_root/scripts/release-feed.py" feed-url "$chronicle_version" --repository "${GITHUB_REPOSITORY:-Red-noblue/Codex-Chronicle}")"
+chronicle_update_feed_url="${CHRONICLE_UPDATE_FEED_URL:-$chronicle_default_feed_url}"
 case "$chronicle_os/$chronicle_arch" in
   darwin/arm64|darwin/amd64|windows/amd64|windows/arm64|linux/amd64|linux/arm64) ;;
   *) echo '当前发布脚本尚未支持此系统和架构' >&2; exit 1 ;;
@@ -37,6 +35,9 @@ if [[ "$chronicle_os" == windows ]]; then chronicle_suffix='.exe'; fi
 if [[ "$chronicle_os" == darwin ]]; then chronicle_cgo=1; fi
 for chronicle_command in codex-chronicle codex-chronicle-desktop chronicle-native-trash; do
   chronicle_ldflags="-s -w -X main.version=$chronicle_version"
+  if [[ "$chronicle_command" == codex-chronicle-desktop ]]; then
+    chronicle_ldflags="$chronicle_ldflags -X main.updateFeedURL=$chronicle_update_feed_url"
+  fi
   if [[ "$chronicle_os" == windows && "$chronicle_command" == codex-chronicle-desktop ]]; then
     chronicle_ldflags="$chronicle_ldflags -H=windowsgui"
   fi

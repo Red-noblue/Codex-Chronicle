@@ -160,8 +160,6 @@
       source = page.source || source; mainline = page.mainline || ''; versions = page.versions || versions;
       if (anchor && items.some(item => item.id === anchor.event.id)) {
         await reveal(anchor.event.id, anchor.inset);
-        // 首次滚动可能出现当前提问提示，等提示布局稳定后再次对齐同一条消息。
-        onScroll(); await reveal(anchor.event.id, anchor.inset);
       }
       if (page.source_changed) status = '读取期间有更新，已保留当前窗口';
       return true;

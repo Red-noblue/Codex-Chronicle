@@ -1,5 +1,5 @@
 // 中文说明：集中解析前端页面路径并生成规范链接，不负责页面状态或数据请求。
-import type { SettingsCategory } from './settings/catalog';
+import { settingsCategories, type SettingsCategory } from './settings/catalog';
 
 export type RoutePage = 'home' | 'sessions' | 'archives' | 'pending' | 'analytics' | 'maintenance' | 'settings';
 export type AppRoute =
@@ -13,7 +13,7 @@ export type AppRoute =
   | { page: 'settings'; category: SettingsCategory }
   | { page: 'not-found'; pathname: string };
 
-const settingsCategories = new Set<SettingsCategory>(['appearance', 'workspaces', 'archives', 'remote', 'system']);
+const settingsCategoryIDs = new Set(settingsCategories.map(({ id }) => id));
 
 export function parseRoute(pathname: string): AppRoute {
   const normalizedPath = pathname.replace(/\/+$/, '') || '/';
@@ -42,7 +42,7 @@ export function parseRoute(pathname: string): AppRoute {
   if (segments.length === 2 && segments[0] === 'sessions') {
     return { page: 'session', conversationID: segments[1] };
   }
-  if (segments.length === 2 && segments[0] === 'settings' && settingsCategories.has(segments[1] as SettingsCategory)) {
+  if (segments.length === 2 && segments[0] === 'settings' && settingsCategoryIDs.has(segments[1] as SettingsCategory)) {
     return { page: 'settings', category: segments[1] as SettingsCategory };
   }
   return { page: 'not-found', pathname: normalizedPath };

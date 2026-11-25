@@ -55,6 +55,58 @@ type OnlineConfig struct {
 	HTTPClient       *http.Client
 }
 
+type onlineProxySettings struct {
+	ProxyURL string `json:"proxy_url"`
+}
+
+func loadOnlineProxy(path string) (*string, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<10 {
+		return nil, errors.New("在线更新代理设置不是有效的普通文件")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var settings onlineProxySettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil, errors.New("无法解析在线更新代理设置")
+	}
+	value := strings.TrimSpace(settings.ProxyURL)
+	return &value, nil
+}
+
+func saveOnlineProxy(path, proxyURL string) error {
+	data, err := json.Marshal(onlineProxySettings{ProxyURL: proxyURL})
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".online-proxy-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
+}
+
 // OnlineCheck 是一次只读版本检查的结果。
 type OnlineCheck struct {
 	FeedURL        string         `json:"feed_url"`
@@ -89,7 +141,7 @@ func normalizeOnlineConfig(config OnlineConfig) (OnlineConfig, error) {
 	}
 	if config.ProxyURL != "" {
 		proxy, err := url.Parse(config.ProxyURL)
-		if err != nil || proxy.Host == "" || proxy.Path != "" || proxy.RawQuery != "" || proxy.Fragment != "" || (proxy.Scheme != "http" && proxy.Scheme != "https" && proxy.Scheme != "socks5" && proxy.Scheme != "socks5h") {
+		if err != nil || proxy.Host == "" || proxy.User != nil || proxy.Path != "" || proxy.RawQuery != "" || proxy.Fragment != "" || (proxy.Scheme != "http" && proxy.Scheme != "https" && proxy.Scheme != "socks5" && proxy.Scheme != "socks5h") {
 			return OnlineConfig{}, errors.New("在线更新代理必须是 HTTP、HTTPS、SOCKS5 或 SOCKS5h 地址")
 		}
 	}
@@ -138,7 +190,7 @@ func validateOnlineRelease(release OnlineRelease, maxBytes int64) error {
 	return nil
 }
 
-// CheckOnlineFeed 从静态 feed 读取当前平台的最高可用版本；它只读网络，不写安装根。
+// CheckOnlineFeed 从固定静态 feed 或 GitHub 公开预览列表读取当前平台更新；它只读网络，不写安装根。
 func CheckOnlineFeed(ctx context.Context, config OnlineConfig, currentVersion string) (OnlineCheck, error) {
 	config, err := normalizeOnlineConfig(config)
 	if err != nil {
@@ -151,29 +203,20 @@ func CheckOnlineFeed(ctx context.Context, config OnlineConfig, currentVersion st
 	if err != nil {
 		return OnlineCheck{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.FeedURL, nil)
+	result := OnlineCheck{FeedURL: config.FeedURL, CurrentVersion: strings.TrimSpace(currentVersion), CheckedAt: time.Now().UTC()}
+	feedURL, expectedVersion := config.FeedURL, ""
+	if repository := githubReleaseRepository(config.FeedURL); repository != "" {
+		feedURL, expectedVersion, err = resolveGitHubPreviewFeed(ctx, client, config, repository, result.CurrentVersion)
+		if err != nil {
+			return OnlineCheck{}, err
+		}
+		if feedURL == "" {
+			return result, nil
+		}
+	}
+	body, _, err := readOnlineJSON(ctx, client, feedURL, config.MaxFeedBytes)
 	if err != nil {
-		return OnlineCheck{}, fmt.Errorf("创建在线 feed 请求失败：%w", err)
-	}
-	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
-	if err != nil {
-		return OnlineCheck{}, fmt.Errorf("读取在线 feed 失败：%w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-		return OnlineCheck{}, fmt.Errorf("在线 feed 返回 HTTP %d：%s", response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	if response.ContentLength > config.MaxFeedBytes {
-		return OnlineCheck{}, errors.New("在线 feed 超过大小限制")
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, config.MaxFeedBytes+1))
-	if err != nil {
-		return OnlineCheck{}, fmt.Errorf("读取在线 feed 内容失败：%w", err)
-	}
-	if int64(len(body)) > config.MaxFeedBytes {
-		return OnlineCheck{}, errors.New("在线 feed 超过大小限制")
+		return OnlineCheck{}, err
 	}
 	var feed OnlineFeed
 	if err := json.Unmarshal(body, &feed); err != nil {
@@ -182,10 +225,16 @@ func CheckOnlineFeed(ctx context.Context, config OnlineConfig, currentVersion st
 	if err := validateOnlineFeed(feed, config.MaxDownloadBytes); err != nil {
 		return OnlineCheck{}, err
 	}
-	result := OnlineCheck{FeedURL: config.FeedURL, CurrentVersion: strings.TrimSpace(currentVersion), CheckedAt: time.Now().UTC()}
+	stableChannel := githubStableFeed(config.FeedURL)
 	var selected *OnlineRelease
 	for index := range feed.Releases {
 		release := feed.Releases[index]
+		if expectedVersion != "" && release.Version != expectedVersion {
+			return OnlineCheck{}, errors.New("GitHub 发布标签与在线 feed 版本不匹配")
+		}
+		if stableChannel && (!githubReleaseTag.MatchString("v"+release.Version) || strings.Contains(release.Version, "-")) {
+			return OnlineCheck{}, errors.New("稳定更新渠道不能包含预览版或无效版本")
+		}
 		if release.OS != runtime.GOOS || release.Arch != runtime.GOARCH {
 			continue
 		}
@@ -202,6 +251,36 @@ func CheckOnlineFeed(ctx context.Context, config OnlineConfig, currentVersion st
 		result.Release = selected
 	}
 	return result, nil
+}
+
+// readOnlineJSON 让发布发现和 feed 请求共用代理、超时和响应上限，不携带 GitHub 账户令牌。
+func readOnlineJSON(ctx context.Context, client *http.Client, address string, maxBytes int64) ([]byte, http.Header, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("创建在线 feed 请求失败：%w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "Codex-Chronicle-Updater")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取在线 feed 失败：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		return nil, nil, fmt.Errorf("在线 feed 返回 HTTP %d：%s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if response.ContentLength > maxBytes {
+		return nil, nil, errors.New("在线 feed 超过大小限制")
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取在线 feed 内容失败：%w", err)
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, nil, errors.New("在线 feed 超过大小限制")
+	}
+	return body, response.Header, nil
 }
 
 func validateOnlineFeed(feed OnlineFeed, maxDownloadBytes int64) error {
@@ -230,7 +309,10 @@ func (m *Manager) DownloadOnline(ctx context.Context, release OnlineRelease) (Do
 	if err := ctx.Err(); err != nil {
 		return DownloadedRelease{}, err
 	}
-	config, err := normalizeOnlineConfig(m.online)
+	m.mu.Lock()
+	configSnapshot := m.online
+	m.mu.Unlock()
+	config, err := normalizeOnlineConfig(configSnapshot)
 	if err != nil {
 		return DownloadedRelease{}, err
 	}

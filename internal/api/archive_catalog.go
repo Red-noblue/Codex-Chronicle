@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,17 +19,19 @@ import (
 const maxLocalArchiveManifestBytes int64 = 16 << 20
 
 type localArchiveCatalogItem struct {
-	Path                 string    `json:"path"`
-	Name                 string    `json:"name"`
-	OperationID          string    `json:"operation_id"`
-	ConversationID       string    `json:"conversation_id,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	Encrypted            bool      `json:"encrypted"`
-	AssetCount           int       `json:"asset_count"`
-	ControlPlaneSnapshot bool      `json:"control_plane_snapshot"`
-	DeclaredPayloadBytes int64     `json:"declared_payload_bytes"`
-	ManifestBytes        int64     `json:"manifest_bytes"`
-	Staging              bool      `json:"staging"`
+	Path                 string                       `json:"path"`
+	Name                 string                       `json:"name"`
+	OperationID          string                       `json:"operation_id"`
+	ConversationID       string                       `json:"conversation_id,omitempty"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	Encrypted            bool                         `json:"encrypted"`
+	AssetCount           int                          `json:"asset_count"`
+	ControlPlaneSnapshot bool                         `json:"control_plane_snapshot"`
+	DeclaredPayloadBytes int64                        `json:"declared_payload_bytes"`
+	ManifestBytes        int64                        `json:"manifest_bytes"`
+	Staging              bool                         `json:"staging"`
+	ManifestSHA256       string                       `json:"manifest_sha256"`
+	Compression          *archive.CloudBackupMetadata `json:"compression,omitempty"`
 }
 
 // localArchiveCatalogHandler 只读取独立 ArchiveRoot 的 manifest，供恢复 UI 选择归档。
@@ -167,5 +170,6 @@ func readLocalArchiveCatalogItem(directory, manifestPath string, staging bool, m
 		ConversationID: manifest.ConversationID, CreatedAt: manifest.CreatedAt, Encrypted: manifest.Encrypted,
 		AssetCount: len(manifest.Assets), ControlPlaneSnapshot: manifest.ControlPlaneSnapshot != nil,
 		DeclaredPayloadBytes: declared, ManifestBytes: manifestBytes, Staging: staging,
+		ManifestSHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Compression: manifest.CloudBackup,
 	}, nil
 }

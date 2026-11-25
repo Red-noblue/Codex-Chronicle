@@ -70,6 +70,12 @@ func (s *Server) idleForShutdown() bool {
 	if executing {
 		return false
 	}
+	s.indexTaskMu.Lock()
+	indexing := s.indexTaskCancel != nil
+	s.indexTaskMu.Unlock()
+	if indexing {
+		return false
+	}
 	s.cloudMu.Lock()
 	cloud := s.cloud
 	s.cloudMu.Unlock()

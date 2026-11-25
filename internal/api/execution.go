@@ -132,7 +132,7 @@ func (s *Server) executionDestination(ctx context.Context) (string, error) {
 	data, err := json.Marshal([]any{status.SourceRoot, status.Key, status.Mode, status.TrashPath,
 		s.lifecycle.ArchiveRoot, s.lifecycle.TrashRoot, s.lifecycle.JournalRoot, s.lifecycle.UseSystemTrash,
 		s.lifecycle.FixtureOnly, s.lifecycleDescriptor().ID, fmt.Sprintf("%T", s.lifecycle.TrashProvider),
-		s.lifecycle.AuthorizedLive, remote, journalIdentity, s.githubSettingsIdentity()})
+		s.lifecycle.AuthorizedLive, remote, journalIdentity, s.githubSettingsIdentity(), s.sourcePolicyFor(status.SourceRoot)})
 	if err != nil {
 		return "", err
 	}
@@ -239,6 +239,11 @@ func (s *Server) validateExecutionReview(ctx context.Context, review *executionR
 	root := s.currentWorkspace().Definition.Root
 	if root != review.Preview.SourceRoot || !s.executionAllowed(root) {
 		return fmt.Errorf("源根或执行权限已变化，请重新预览")
+	}
+	if review.Input.Trash || review.Input.PermanentDelete {
+		if err := s.requireSourceChanges(root); err != nil {
+			return err
+		}
 	}
 	if time.Now().After(review.ExpiresAt) {
 		return fmt.Errorf("影响预览已过期，请重新预览")
@@ -486,14 +491,33 @@ func (s *Server) confirmedExecutionHandler(writer http.ResponseWriter, request *
 			task.RecoveryCommand += " --all-conversations"
 		}
 	}
+	release := func() {}
+	if review.Input.Trash || review.Input.PermanentDelete {
+		var err error
+		release, err = s.beginSourceChanges(task.SourceRoot)
+		if err != nil {
+			writeError(writer, http.StatusForbidden, err.Error())
+			return
+		}
+	}
+	// 操作计数持有后复核确认摘要，封住验证期间策略来回切换的窗口。
+	if destination, err := s.executionDestination(request.Context()); err != nil || destination != review.Destination {
+		release()
+		writeError(writer, http.StatusConflict, "执行配置已变化，请重新预览")
+		return
+	}
 	if err := s.saveExecutionTask(task); err != nil {
+		release()
 		writeError(writer, http.StatusInternalServerError, "执行记录落盘失败，未修改源: "+err.Error())
 		return
 	}
 	confirmation.TaskID = task.ID
 	s.executionTasks[task.ID], s.executionActive = task, task.ID
 	archive := s.currentWorkspace().Archive
-	go s.runExecutionTask(task.ID, review, input.ArchivePassword, archive)
+	go func() {
+		defer release()
+		s.runExecutionTask(task.ID, review, input.ArchivePassword, archive)
+	}()
 	writeJSON(writer, http.StatusAccepted, task)
 }
 

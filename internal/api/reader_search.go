@@ -3,99 +3,105 @@ package api
 
 import (
 	"context"
-	"strconv"
-	"strings"
 
 	"codex-chronicle.local/internal/application"
 	"codex-chronicle.local/internal/domain"
 	"codex-chronicle.local/internal/reader"
 	"codex-chronicle.local/internal/searchtext"
+	"codex-chronicle.local/internal/store"
 )
 
-func (s *Server) effectiveSearchHits(ctx context.Context, root, query string, candidates []domain.SearchHit, limit int) ([]domain.SearchHit, error) {
-	snapshot, err := s.tasks.ReadReport(ctx, root, application.ScanOptions{}, true)
-	if err != nil {
-		return nil, err
-	}
-	sources := []reader.Source{}
+func effectiveSearchFilter(ctx context.Context, root, query string, report domain.InventoryReport, archive *store.Store, delivered ...domain.SearchHit) application.SearchHitFilter {
+	needle := searchtext.Normalize(query)
+	var sources []reader.Source
 	byPath := map[string]domain.ConversationSummary{}
-	for _, file := range snapshot.Report.Files {
-		if file.Kind != domain.AssetKindJSONL || file.Rollout == nil {
-			continue
-		}
-		path, e := application.ResolveReadOnlyPath(root, file.RelativePath)
-		if e != nil {
-			continue
-		}
-		source := reader.Source{Relative: file.RelativePath, Path: path}
-		if file.Rollout != nil {
-			source.ID = file.Rollout.SourceID
-		}
-		sources = append(sources, source)
-	}
-	for _, conversation := range snapshot.Report.Conversations {
+	for _, conversation := range report.Conversations {
 		for _, path := range conversation.RolloutPaths {
 			byPath[path] = conversation
 		}
 	}
-	plans := map[string]reader.Plan{}
-	out := []domain.SearchHit{}
-	seen := map[string]bool{}
-	archive := s.currentWorkspace().Archive
+	var plan reader.Plan
+	var plannedID string
+	var historyEnds map[string]int64
+	type position struct {
+		path   string
+		offset int64
+	}
+	seen := make(map[position]bool)
+	for _, hit := range delivered {
+		seen[position{hit.RelativePath, hit.StartOffset}] = true
+	}
 	var cache reader.ProjectionCache
 	if archive != nil {
 		cache = archive
 	}
-	for _, hit := range candidates {
+	return func(hit domain.SearchHit) (domain.SearchHit, bool, error) {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return hit, false, err
 		}
 		conversation, ok := byPath[hit.RelativePath]
 		if !ok {
-			continue
+			return hit, false, nil
 		}
-		plan, ok := plans[conversation.ID]
-		if !ok {
-			plan = reader.BuildPlan(ctx, sources, conversation.RolloutPaths)
-			plan.Projection, err = reader.DefaultManager.Wait(ctx, plan, cache)
-			if err != nil {
-				return nil, err
+		// 候选按来源文件排列。只持有当前会话计划，避免稀有词搜索保留大量历史计划。
+		if plannedID != conversation.ID {
+			if sources == nil {
+				sources = make([]reader.Source, 0, len(byPath))
+				for _, file := range report.Files {
+					if file.Kind != domain.AssetKindJSONL || file.Rollout == nil {
+						continue
+					}
+					if path, err := application.ResolveReadOnlyPath(root, file.RelativePath); err == nil {
+						sources = append(sources, reader.Source{Relative: file.RelativePath, Path: path, ID: file.Rollout.SourceID})
+					}
+				}
 			}
-			plans[conversation.ID] = plan
+			plan = reader.BuildPlan(ctx, sources, conversation.RolloutPaths)
+			projection, err := reader.DefaultManager.Wait(ctx, plan, cache)
+			if err != nil {
+				return hit, false, err
+			}
+			plan.Projection, plannedID = projection, conversation.ID
+			historyEnds = make(map[string]int64, len(plan.Segments))
+			for _, segment := range plan.Segments {
+				historyEnds[segment.Relative] = segment.End
+			}
 		}
 		ref := domain.EventReference{Path: hit.RelativePath, Start: hit.StartOffset, End: hit.EndOffset, Line: hit.Line}
 		if plan.Projection.Excluded(ref.Path, ref.Start) {
 			pair := plan.Projection.CallForResult(ref.Path, ref.Start)
 			if pair == nil || plan.Projection.Excluded(pair.Call.Path, pair.Call.Start) {
-				continue
+				return hit, false, nil
 			}
 			ref = pair.Call
 		}
+		if ref.End > historyEnds[ref.Path] {
+			return hit, false, nil
+		}
 		// 精确复核候选地址，不能把已跳过的记录误算成下一条消息的命中。
-		page, e := reader.ReadPage(ctx, plan, reader.Position{Path: ref.Path, Offset: ref.Start, Line: ref.Line - 1}, 1, nil, true)
-		if e != nil || len(page.Items) == 0 {
-			continue
+		page, err := reader.ReadPage(ctx, plan, reader.Position{Path: ref.Path, Offset: ref.Start, Line: ref.Line - 1}, 1, nil, true)
+		if err != nil {
+			return hit, false, err
+		}
+		if len(page.Items) == 0 {
+			return hit, false, nil
 		}
 		event := page.Items[0]
 		if event.RelativePath != ref.Path || event.StartOffset != ref.Start || event.Kind == "injected_context" || event.Role == "developer" {
-			continue
+			return hit, false, nil
 		}
-		text := reader.SearchableText(event)
-		if !strings.Contains(searchtext.Normalize(text), searchtext.Normalize(query)) {
-			continue
+		match := searchtext.Snippet(searchtext.Normalize(reader.SearchableText(event)), needle)
+		if match == "" {
+			return hit, false, nil
 		}
-		key := ref.Path + ":" + strconv.FormatInt(ref.Start, 10)
+		key := position{ref.Path, ref.Start}
 		if seen[key] {
-			continue
+			return hit, false, nil
 		}
 		seen[key] = true
-		hit.Snippet = readerSearchSnippet(text, searchtext.Normalize(query))
+		hit.Snippet = match
 		hit.RelativePath, hit.StartOffset, hit.EndOffset, hit.Line = ref.Path, ref.Start, ref.End, ref.Line
 		hit.ConversationID = conversation.ID
-		out = append(out, hit)
-		if len(out) >= limit {
-			break
-		}
+		return hit, true, nil
 	}
-	return out, nil
 }
