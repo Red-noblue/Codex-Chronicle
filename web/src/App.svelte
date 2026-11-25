@@ -415,6 +415,7 @@
     online_configured: boolean;
     online_feed_url?: string;
     online_proxy_url?: string;
+    last_cleanup?: { running_version: string; removed_items: number; freed_bytes: number; warnings?: string[]; completed_at: string };
   };
   type OnlineRelease = {
     version: string;
@@ -976,6 +977,9 @@
   let summaryBatchLoading = false;
   let summaryPollToken = 0;
   let updateStatus: UpdateStatus | null = null;
+  let updateRunningVersion = '';
+  let updateRestartAvailable = false;
+  let updateRestartRequired = false;
   let updatePreflight: UpdatePreflight | null = null;
   let onlineUpdate: OnlineCheck | null = null;
   let updateProxyURL = '';
@@ -2104,8 +2108,11 @@
     try {
       const response = await apiFetch('/api/v1/update/status');
       if (!response.ok) throw new Error(`读取更新状态失败（HTTP ${response.status}）`);
-      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string };
+      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string; running_version?: string; restart_available?: boolean; restart_required?: boolean };
       updateStatus = body.available && body.status ? body.status : null;
+      updateRunningVersion = body.running_version || '';
+      updateRestartAvailable = body.restart_available === true;
+      updateRestartRequired = body.restart_required === true;
       updateProxyURL = updateStatus?.online_proxy_url || '';
       if (updateProxyURL) {
         try {
@@ -2223,19 +2230,55 @@
     }
   }
 
-  async function activateUpdate() {
-    if (!updatePlan || updateLoading || !window.confirm(`确认将下一次启动版本切换为 ${updatePlan.version}？当前 daemon 不会自动重启。`)) return;
+  async function waitForUpdateRestart(expectedVersion: string) {
+    updateMessage = '正在等待后台任务完成并重新启动，请稍候。端口变化时会自动打开新页面。';
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const response = await window.fetch('/healthz', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+        const health = await response.json() as { status?: string; version?: string };
+        if (response.ok && health.status === 'ok' && health.version === expectedVersion) {
+          window.location.reload();
+          return;
+        }
+      } catch { /* 旧后台退出与新后台启动之间短暂断开连接是正常现象。 */ }
+    }
+    updateMessage = '此页面尚未连上新版本。后台可能仍在等待任务结束，或已使用新端口打开页面；请查看托盘。重启失败详情见日志目录中的 update-restart.log。';
+  }
+
+  async function restartUpdate() {
+    if (!updateStatus?.state.active_version || updateLoading || !window.confirm('现在重新启动应用，使已准备好的版本生效？已有任务会先正常完成。')) return;
+    updateLoading = true;
+    try {
+      const response = await apiFetch('/api/v1/update/restart', { method: 'POST' });
+      const body = await response.json() as { restart_scheduled?: boolean; version?: string; error?: string };
+      if (!response.ok || !body.restart_scheduled || !body.version) throw new Error(body.error || '未能安排重启');
+      await waitForUpdateRestart(body.version);
+    } catch (error) {
+      updateMessage = error instanceof Error ? error.message : '未能安排重启';
+    } finally {
+      updateLoading = false;
+    }
+  }
+
+  async function activateUpdate(restart = false) {
+    if (!updatePlan || updateLoading || !window.confirm(restart ? `更新到 ${updatePlan.version} 并重新启动应用？已有任务会先正常完成。` : `准备更新到 ${updatePlan.version}？稍后重新启动应用时生效。`)) return;
     updateLoading = true;
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/activate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: updatePlan.id })
+        body: JSON.stringify({ plan_id: updatePlan.id, restart })
       });
-      const body = (await response.json()) as { result?: { active_version?: string }; error?: string };
+      const body = (await response.json()) as { result?: { active_version?: string }; error?: string; restart_scheduled?: boolean; restart_error?: string };
       if (!response.ok || !body.result) throw new Error(body.error || `更新切换失败（HTTP ${response.status}）`);
       updatePlan = null;
-      updateMessage = `已切换到 ${body.result.active_version || '新版本'}；请按部署方式重启 daemon。`;
+      if (body.restart_scheduled && body.result.active_version) {
+        await waitForUpdateRestart(body.result.active_version);
+        return;
+      }
+      updateMessage = body.restart_error || `更新已准备好，重新启动应用后将使用 ${body.result.active_version || '新版本'}。`;
       await loadUpdateStatus();
       await loadUpdatePreflight();
     } catch (error) {
@@ -2253,7 +2296,7 @@
       const response = await apiFetch('/api/v1/update/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const body = (await response.json()) as { result?: { active_version?: string }; error?: string };
       if (!response.ok || !body.result) throw new Error(body.error || `更新回滚失败（HTTP ${response.status}）`);
-      updateMessage = `已回滚到 ${body.result.active_version || '旧版本'}；请按部署方式重启 daemon。`;
+      updateMessage = `已准备回滚到 ${body.result.active_version || '旧版本'}，重新启动应用后生效。`;
       await loadUpdateStatus();
     } catch (error) {
       updateMessage = error instanceof Error ? error.message : '更新回滚失败';
@@ -5181,15 +5224,16 @@
         <SettingsPanel id="updates">
       {#if updateStatus}
       <div class="update-panel">
-        <div class="section-label">离线更新</div>
-        <div class="update-status-line"><span>当前版本</span><strong>{updateStatus.state.active_version || '未激活'}</strong></div>
+        <div class="section-label">应用更新</div>
+        <div class="update-status-line"><span>正在运行</span><strong>{updateRunningVersion || updateStatus.state.active_version || '未激活'}</strong></div>
+        {#if updateRestartRequired}<div class="update-status-line"><span>重启后生效</span><strong>{updateStatus.state.active_version}</strong></div>{#if updateRestartAvailable}<button class="copy-confirm" on:click={restartUpdate} disabled={updateLoading}>立即重启</button>{/if}{/if}
         {#if updateStatus.state.previous_version}<div class="update-status-line"><span>可回滚版本</span><strong>{updateStatus.state.previous_version}</strong></div>{/if}
         <div class="update-status-line"><span>清单签名</span><strong>{updateStatus.signature_required ? `强制 · ${updateStatus.trusted_key_count} 个信任根` : '可用但未强制'}</strong></div>
         {#if updateStatus.recovery_required}<div class="update-warning">{updateStatus.recovery_message || '检测到未完成更新 journal，请先人工检查。'}</div>{/if}
         {#if updatePreflight?.blocked}<div class="update-warning">更新安全预检已阻断：{updatePreflight.migration?.status || (updatePreflight.adapter?.errors || []).join('；') || '请先处理迁移或兼容 adapter 问题。'}</div>{:else if updatePreflight}<small class="copy-note">更新安全预检：通过 · archive.db {updatePreflight.migration?.status || 'ready'}</small>{/if}
         {#if updateStatus.online_configured}
           <div class="update-online">
-            <div class="update-online-head"><span>在线 feed</span><small>{updateStatus.online_feed_url || '已配置'}</small></div>
+            <div class="update-online-head"><span>更新来源</span><small>{updateStatus.online_feed_url || '已配置'}</small></div>
             <div class="update-proxy-field"><label for="update-proxy-scheme">代理协议</label><select id="update-proxy-scheme" bind:value={updateProxyScheme} disabled={updateLoading}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5h</option></select><label for="update-proxy-address">代理地址</label><input id="update-proxy-address" bind:value={updateProxyAddress} autocomplete="off" spellcheck="false" placeholder="127.0.0.1:7890" disabled={updateLoading} /></div>
             <small class="copy-note">代理仅用于更新检查和下载。留空地址可关闭代理。</small>
             <button class="secondary-button" on:click={saveUpdateProxy} disabled={updateLoading}>{updateLoading ? '保存中…' : '保存代理设置'}</button>
@@ -5204,10 +5248,12 @@
         <input bind:value={updateBundleRoot} placeholder="离线包目录或 ZIP/TAR 文件绝对路径" aria-label="离线包目录或 ZIP/TAR 文件" />
         <button class="secondary-button" on:click={prepareUpdate} disabled={updateLoading || !updateBundleRoot.trim()}>{updateLoading ? '处理中…' : '预检离线包'}</button>
         {#if updatePlan}
-          <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span><small>计划 {updatePlan.id}</small><button class="copy-confirm" on:click={activateUpdate} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button></div>
+          <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span>{#if updateRestartAvailable}<button class="copy-confirm" on:click={() => activateUpdate(true)} disabled={updateLoading || updatePreflight?.blocked}>更新并重启</button><button class="secondary-button" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>稍后重启</button>{:else}<button class="copy-confirm" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button>{/if}</div>
         {/if}
         {#if updateStatus.state.previous_version}<button class="update-rollback" on:click={rollbackUpdate} disabled={updateLoading}>回滚到 {updateStatus.state.previous_version}</button>{/if}
-        <small class="copy-note">更新只切换独立安装根的版本指针，不修改 Codex 数据；切换后需要按部署方式重启 daemon。</small>
+        <small class="copy-note">安装版在新版本启动成功后自动清理更新缓存；保留当前版本、上一可回滚版本、安装基线和待确认更新。</small>
+        {#if updateStatus.last_cleanup?.removed_items}<small class="copy-note">上次自动清理释放 {formatBytes(updateStatus.last_cleanup.freed_bytes)}。</small>{/if}
+        {#if updateStatus.last_cleanup?.warnings?.length}<HelpBubble id="update-cleanup-warning" label="更新清理说明" text={updateStatus.last_cleanup.warnings.join('；')} />{/if}
         {#if updateMessage}<div class="update-message">{updateMessage}</div>{/if}
       </div>
       {:else}

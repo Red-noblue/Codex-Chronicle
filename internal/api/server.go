@@ -112,6 +112,7 @@ type Server struct {
 	copyTasks              *copypkg.Manager
 	liveCopyTasks          *copypkg.LiveManager
 	updater                *updatepkg.Manager
+	updateRestart          func(context.Context, string) error
 	recoveryMu             sync.RWMutex
 	recoveryCandidates     []operation.RecoveryCandidate
 	recoveryErrors         []string
@@ -276,6 +277,11 @@ func (s *Server) SetUpdateManager(manager *updatepkg.Manager) {
 // SetUpdatePackageCheck 在实际进程入口注入候选包隔离启动检查；测试用的纯数据 bundle 不执行程序。
 func (s *Server) SetUpdatePackageCheck(check updatepkg.HealthCheck) {
 	s.updatePackageCheck = check
+}
+
+// SetUpdateRestart 仅由受桌面启动器管理的后台注入；手动运行的开发服务仍由部署者控制重启。
+func (s *Server) SetUpdateRestart(restart func(context.Context, string) error) {
+	s.updateRestart = restart
 }
 
 // SetTrashSettingsStore 注入用户级回收站设置存储；应在 daemon 开始接受请求前调用。
@@ -646,6 +652,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/update/prepare-online", s.updatePrepareOnlineHandler)
 	mux.HandleFunc("/api/v1/update/prepare", s.updatePrepareHandler)
 	mux.HandleFunc("/api/v1/update/activate", s.updateActivateHandler)
+	mux.HandleFunc("/api/v1/update/restart", s.updateRestartHandler)
 	mux.HandleFunc("/api/v1/update/rollback", s.updateRollbackHandler)
 	mux.HandleFunc("/api/v1/auth/status", s.authStatusHandler)
 	mux.HandleFunc("/api/v1/auth/bind", s.authBindHandler)

@@ -306,6 +306,15 @@ func (m *Manager) DownloadOnline(ctx context.Context, release OnlineRelease) (Do
 	if m == nil {
 		return DownloadedRelease{}, errors.New("更新管理器未初始化")
 	}
+	lease, err := acquireUpdateLock(filepath.Join(m.root, ".download.lock"))
+	if err != nil {
+		return DownloadedRelease{}, err
+	}
+	defer lease.Close()
+	return m.downloadOnline(ctx, release)
+}
+
+func (m *Manager) downloadOnline(ctx context.Context, release OnlineRelease) (DownloadedRelease, error) {
 	if err := ctx.Err(); err != nil {
 		return DownloadedRelease{}, err
 	}
@@ -435,6 +444,15 @@ func (m *Manager) CheckOnline(ctx context.Context) (OnlineCheck, error) {
 
 // PrepareOnline 下载当前 feed 选出的版本并生成离线更新计划；版本切换仍由 ActivateByID 显式完成。
 func (m *Manager) PrepareOnline(ctx context.Context, allowDowngrade bool) (Plan, DownloadedRelease, error) {
+	if m == nil {
+		return Plan{}, DownloadedRelease{}, errors.New("更新管理器未初始化")
+	}
+	// 下载与计划登记共用租约，避免清理恰好发生在文件下载完成、计划尚未持久化之间。
+	lease, err := acquireUpdateLock(filepath.Join(m.root, ".download.lock"))
+	if err != nil {
+		return Plan{}, DownloadedRelease{}, err
+	}
+	defer lease.Close()
 	check, err := m.CheckOnline(ctx)
 	if err != nil {
 		return Plan{}, DownloadedRelease{}, err
@@ -442,7 +460,7 @@ func (m *Manager) PrepareOnline(ctx context.Context, allowDowngrade bool) (Plan,
 	if !check.Available || check.Release == nil {
 		return Plan{}, DownloadedRelease{}, errors.New("在线 feed 没有高于当前版本的可用更新")
 	}
-	downloaded, err := m.DownloadOnline(ctx, *check.Release)
+	downloaded, err := m.downloadOnline(ctx, *check.Release)
 	if err != nil {
 		return Plan{}, DownloadedRelease{}, err
 	}
@@ -469,6 +487,10 @@ func (m *Manager) PrepareOnline(ctx context.Context, allowDowngrade bool) (Plan,
 		_ = os.RemoveAll(plan.BundleRoot)
 		_ = os.Remove(downloaded.Path)
 		return Plan{}, DownloadedRelease{}, errors.New("在线发布信息与包内清单的版本或构建标识不一致")
+	}
+	plan.DownloadPath = downloaded.Path
+	if err := writeAtomicJSON(ctx, m.planPath(plan.ID), plan); err != nil {
+		return Plan{}, DownloadedRelease{}, fmt.Errorf("保存下载包与更新计划的关联失败：%w", err)
 	}
 	return plan, downloaded, nil
 }

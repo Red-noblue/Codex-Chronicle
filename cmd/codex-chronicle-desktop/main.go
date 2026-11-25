@@ -35,6 +35,8 @@ func main() {
 	quit := flag.Bool("quit", false, "等待任务完成并退出已有后台；不会强制终止")
 	verify := flag.Bool("verify", false, "使用空白隔离目录验证此安装包的启动、版本和安全退出")
 	startupCheck := flag.Bool("startup-check", false, "安装器专用：启动暂停接收操作的候选版本")
+	restartInstance := flag.String("restart-instance", "", "更新器专用：安全退出指定实例并重新打开应用")
+	restartVersion := flag.String("restart-version", "", "更新器专用：本次重新启动的已确认目标版本")
 	activate := flag.Bool("activate", false, "安装器专用：核对版本后开放已通过检查的后台")
 	installApp := flag.String("install-app", "", "安装器专用：完整 macOS 应用来源")
 	installTarget := flag.String("install-target", "", "安装器专用：完整 macOS 应用目标")
@@ -112,6 +114,13 @@ func main() {
 		}
 		return
 	}
+	if *restartInstance != "" {
+		// 独立协作进程等待数据任务正常结束，不受原 HTTP 请求或旧后台退出影响。
+		if err := desktop.RestartAfterUpdate(context.Background(), desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version, UpdateFeedURL: updateFeedURL, NoBrowser: *noBrowser}, *restartInstance, *restartVersion); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if *activate {
 		instance, err := desktop.Running(ctx, *dataDir)
 		if err != nil {
@@ -144,7 +153,7 @@ func main() {
 	if *status {
 		instance, err = desktop.Running(ctx, *dataDir)
 	} else {
-		instance, err = desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, Address: *address, AutoPort: autoPort, ScanRoot: *scanRoot, StartupCheck: *startupCheck, ExpectedVersion: version, UpdateFeedURL: updateFeedURL})
+		instance, err = desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, Address: *address, AutoPort: autoPort, ScanRoot: *scanRoot, StartupCheck: *startupCheck, NoBrowser: *noBrowser, ExpectedVersion: version, UpdateFeedURL: updateFeedURL})
 	}
 	if err != nil {
 		fatal(err)

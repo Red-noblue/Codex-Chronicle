@@ -38,6 +38,7 @@ func main() {
 	desktopStateDir := flag.String("desktop-state-dir", "", "安装版私有实例目录；由桌面启动器设置")
 	desktopStartPaused := flag.Bool("desktop-start-paused", false, "安装器启动候选版本，确认前只开放私有控制通道和健康检查")
 	desktopAutoPort := flag.Bool("desktop-auto-port", false, "启动器专用：首选端口被占用时自动绑定本机空闲端口")
+	desktopNoBrowser := flag.Bool("desktop-no-browser", false, "启动器专用：更新重启后保持无浏览器、无托盘运行方式")
 	address := flag.String("address", "127.0.0.1:8787", "本地健康检查监听地址")
 	allowRemote := flag.Bool("allow-remote", false, "允许非回环监听；启动后必须通过一次性绑定码建立会话")
 	authStatePath := flag.String("auth-state", defaultAuthStatePath(), "远程认证状态文件；必须位于 .codex 外部")
@@ -476,6 +477,15 @@ func main() {
 			log.Fatal(managerErr)
 		}
 		server.SetUpdateManager(manager)
+		if desktopLease != nil {
+			executable, executableErr := os.Executable()
+			if executableErr != nil {
+				log.Fatal(executableErr)
+			}
+			server.SetUpdateRestart(func(ctx context.Context, target string) error {
+				return desktop.ScheduleUpdateRestart(ctx, desktop.LaunchOptions{PackageRoot: desktop.PackageRoot(executable), DataDir: filepath.Dir(*desktopStateDir), UpdateFeedURL: *updateFeedURL, NoBrowser: *desktopNoBrowser}, desktopLease.Instance.ID, target)
+			})
+		}
 		if err := manager.Recover(context.Background()); err != nil {
 			log.Fatalf("在线/离线更新中断恢复失败，未启动服务：%v", err)
 		}

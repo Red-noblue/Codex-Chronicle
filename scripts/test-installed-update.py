@@ -12,7 +12,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -92,6 +94,26 @@ def main():
             run([launcher, "--quit", "--data-dir", profile], env=environment)
         safe_to_cleanup = True
 
+    def await_restart(previous_id, expected_version):
+        nonlocal address
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            try:
+                current = json.loads((profile / "runtime/instance.json").read_text(encoding="utf-8"))
+                if current["id"] == previous_id or current["version"] != expected_version:
+                    continue
+                address = current["url"]
+                state = request("/api/v1/update/status")
+                cleanup = state["status"].get("last_cleanup", {})
+                if request("/healthz")["version"] == expected_version and cleanup.get("running_version") == expected_version:
+                    return current
+            except (OSError, ValueError, AssertionError):
+                continue
+        restart_log = profile / "logs/update-restart.log"
+        details = restart_log.read_text(encoding="utf-8")[-4000:] if restart_log.exists() else "协作进程未留下日志"
+        raise AssertionError("更新未能自动重新启动：" + details)
+
     def select_release(version, archive):
         artifact = archive.read_bytes()
         artifacts["/release.zip"] = artifact
@@ -131,6 +153,7 @@ def main():
         new, new_archive, new_args = package(new_version, "updated", "/stable.json")
         launcher = old / ("bin/codex-chronicle-desktop" + suffix)
         first = launch(launcher)
+        (profile / "startup.json").write_text(json.dumps({"port": urllib.parse.urlsplit(address).port, "auto_fallback": True}), encoding="utf-8")
         state = request("/api/v1/update/status")["status"]
         assert first["version"] == old_version
         assert state["state"]["active_version"] == old_version and state["state"]["installed_version"] == old_version
@@ -146,16 +169,20 @@ def main():
         select_release(new_version, new_archive)
         plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
         assert plan["previous_version"] == old_version
-        assert request("/api/v1/update/activate", {"plan_id": plan["id"]})["restart_required"]
-        assert request("/healthz")["version"] == old_version
-        stop()
-        second = launch(launcher)
+        response = request("/api/v1/update/activate", {"plan_id": plan["id"], "restart": True})
+        assert response["restart_scheduled"], response
+        first_url = address
+        second = await_restart(first["id"], new_version)
+        assert address == first_url, "更新重启未恢复用户保存的端口"
         state = request("/api/v1/update/status")["status"]
         assert second["version"] == new_version and second["id"] != first["id"]
         assert state["state"]["previous_version"] == old_version
         assert state["online_feed_url"] == base_url + "/stable.json", "旧启动器沿用了旧更新渠道"
         assert not request("/api/v1/update/check")["available"]
-        print("通过：原安装入口重启到完整新版本，启动器更新渠道同步切换，保留首次回滚基线", flush=True)
+        assert state["last_cleanup"]["removed_items"] >= 2, state
+        assert not list((profile / "updates/bundles").iterdir()), "成功更新后压缩包或预检副本仍然残留"
+        assert new_archive.is_file(), "清理触碰了应用缓存外的源安装包"
+        print("通过：应用内更新自动退出并重启到新版本，恢复原端口和新渠道，自动清理压缩包与预检副本", flush=True)
 
         _, bad_archive, _ = package(later_version, "bad", "/stable.json", bad=True)
         select_release(later_version, bad_archive)
@@ -167,8 +194,8 @@ def main():
         print("通过：签名正确但无法启动的候选被拒绝，当前版本和运行后台继续可用", flush=True)
 
         request("/api/v1/update/rollback", {})
-        stop()
-        assert launch(launcher)["version"] == old_version
+        assert request("/api/v1/update/restart", {}, 202)["restart_scheduled"]
+        assert await_restart(second["id"], old_version)["version"] == old_version
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"
             assert database.execute("SELECT value FROM installed_update_marker").fetchone()[0] == "跨版本保留"
@@ -180,6 +207,10 @@ def main():
         assert launch(launcher)["version"] == later_version
         state = request("/api/v1/update/status")["status"]["state"]
         assert state["installed_version"] == later_version and state["previous_version"] == old_version
+        assert not (profile / "updates/versions" / new_version).exists(), "不再使用的历史版本没有自动清理"
+        assert (profile / "updates/versions" / old_version).is_dir(), "清理破坏了可回滚版本"
+        assert (profile / "updates/versions" / later_version).is_dir(), "清理破坏了安装基线"
+        assert Path(bad_plan["bundle_root"]).is_dir(), "清理删除了仍待处理的候选版本"
         request("/api/v1/update/rollback", {})
         stop()
         assert launch(launcher)["version"] == old_version, "再次打开新安装器撤销了人工回滚"

@@ -58,6 +58,7 @@ type Manifest struct {
 type Plan struct {
 	ID              string    `json:"id"`
 	BundleRoot      string    `json:"bundle_root"`
+	DownloadPath    string    `json:"download_path,omitempty"`
 	InstallRoot     string    `json:"install_root"`
 	Version         string    `json:"version"`
 	PreviousVersion string    `json:"previous_version,omitempty"`
@@ -82,18 +83,19 @@ type State struct {
 
 // Status 是 UI/API 可展示的安装状态。
 type Status struct {
-	InstallRoot       string   `json:"install_root"`
-	State             State    `json:"state"`
-	Versions          []string `json:"versions"`
-	PendingPlanIDs    []string `json:"pending_plan_ids,omitempty"`
-	RecoveryRequired  bool     `json:"recovery_required"`
-	RecoveryMessage   string   `json:"recovery_message,omitempty"`
-	ReadOnlySource    bool     `json:"read_only_source"`
-	SignatureRequired bool     `json:"signature_required"`
-	TrustedKeyCount   int      `json:"trusted_key_count"`
-	OnlineConfigured  bool     `json:"online_configured"`
-	OnlineFeedURL     string   `json:"online_feed_url,omitempty"`
-	OnlineProxyURL    string   `json:"online_proxy_url,omitempty"`
+	InstallRoot       string         `json:"install_root"`
+	State             State          `json:"state"`
+	Versions          []string       `json:"versions"`
+	PendingPlanIDs    []string       `json:"pending_plan_ids,omitempty"`
+	RecoveryRequired  bool           `json:"recovery_required"`
+	RecoveryMessage   string         `json:"recovery_message,omitempty"`
+	ReadOnlySource    bool           `json:"read_only_source"`
+	SignatureRequired bool           `json:"signature_required"`
+	TrustedKeyCount   int            `json:"trusted_key_count"`
+	OnlineConfigured  bool           `json:"online_configured"`
+	OnlineFeedURL     string         `json:"online_feed_url,omitempty"`
+	OnlineProxyURL    string         `json:"online_proxy_url,omitempty"`
+	LastCleanup       *CleanupResult `json:"last_cleanup,omitempty"`
 }
 
 // SetOnlineProxy 更新并持久化仅供在线更新使用的代理地址。
@@ -696,7 +698,15 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL, OnlineProxyURL: m.online.ProxyURL}, nil
+	var cleanup CleanupResult
+	if data, err := os.ReadFile(filepath.Join(m.root, "last-cleanup.json")); err == nil {
+		_ = json.Unmarshal(data, &cleanup)
+	}
+	status := Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL, OnlineProxyURL: m.online.ProxyURL}
+	if !cleanup.CompletedAt.IsZero() {
+		status.LastCleanup = &cleanup
+	}
+	return status, nil
 }
 
 // VerifyVersionRoot 只读验证一个已发布版本目录的清单和全部文件摘要。

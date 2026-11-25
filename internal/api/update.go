@@ -17,7 +17,8 @@ type updatePrepareRequest struct {
 }
 
 type updatePlanRequest struct {
-	PlanID string `json:"plan_id"`
+	PlanID  string `json:"plan_id"`
+	Restart bool   `json:"restart,omitempty"`
 }
 
 type updateProxyRequest struct {
@@ -66,7 +67,7 @@ func (s *Server) updateStatusHandler(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"available": true, "read_only": true, "status": status})
+	writeJSON(writer, http.StatusOK, map[string]any{"available": true, "read_only": true, "status": status, "running_version": s.version, "restart_available": s.updateRestart != nil, "restart_required": status.State.ActiveVersion != "" && status.State.ActiveVersion != s.version})
 }
 
 // updateCheckHandler 只读取配置的在线 feed，不下载或切换版本。
@@ -189,12 +190,45 @@ func (s *Server) updateActivateHandler(writer http.ResponseWriter, request *http
 	if !ok {
 		return
 	}
+	if input.Restart && s.updateRestart == nil {
+		writeError(writer, http.StatusConflict, "当前运行方式不支持应用内重启，请选择稍后重启")
+		return
+	}
 	result, err := s.updater.ActivateByID(request.Context(), input.PlanID, s.updateHealthCheck())
 	if err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]any{"read_only": true, "blocked": true, "source_read_only": true, "error": err.Error()})
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"read_only": false, "source_read_only": true, "blocked": false, "restart_required": true, "result": result})
+	response := map[string]any{"read_only": false, "source_read_only": true, "blocked": false, "restart_required": true, "result": result}
+	if input.Restart {
+		if err := s.updateRestart(request.Context(), result.ActiveVersion); err != nil {
+			response["restart_error"] = "更新已准备好，但未能自动重启：" + err.Error()
+		} else {
+			response["restart_scheduled"] = true
+		}
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) updateRestartHandler(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeError(writer, http.StatusMethodNotAllowed, "只支持 POST")
+		return
+	}
+	if s.updater == nil || s.updateRestart == nil {
+		writeError(writer, http.StatusConflict, "当前运行方式不支持应用内重启")
+		return
+	}
+	status, err := s.updater.Status(request.Context())
+	if err != nil || status.State.ActiveVersion == "" || status.State.ActiveVersion == s.version || status.RecoveryRequired {
+		writeError(writer, http.StatusConflict, "没有已准备好且等待重启的版本")
+		return
+	}
+	if err := s.updateRestart(request.Context(), status.State.ActiveVersion); err != nil {
+		writeError(writer, http.StatusConflict, "未能安排重启："+err.Error())
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, map[string]any{"restart_scheduled": true, "version": status.State.ActiveVersion})
 }
 
 func (s *Server) updateRollbackHandler(writer http.ResponseWriter, request *http.Request) {

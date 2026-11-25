@@ -31,6 +31,7 @@ type LaunchOptions struct {
 	AutoPort        bool
 	ScanRoot        string
 	StartupCheck    bool
+	NoBrowser       bool
 	ExpectedVersion string
 	UpdateFeedURL   string
 }
@@ -177,6 +178,9 @@ func DaemonArguments(options LaunchOptions, config Config) ([]string, error) {
 	if options.StartupCheck {
 		args = append(args, "--desktop-start-paused")
 	}
+	if options.NoBrowser {
+		args = append(args, "--desktop-no-browser")
+	}
 	if config.ScanRoot != "" {
 		args = append(args, "--scan-root", config.ScanRoot)
 	}
@@ -238,6 +242,7 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 		if err := instance.CheckHealth(ctx); err != nil {
 			return Instance{}, err
 		}
+		confirmUpdateLaunch(ctx, options, instance)
 		return instance, nil
 	}
 	options, err = resolveUpdatePackage(ctx, options)
@@ -304,6 +309,7 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 			if err := instance.CheckHealth(ctx); err != nil {
 				return Instance{}, err
 			}
+			confirmUpdateLaunch(ctx, options, instance)
 			return instance, nil
 		}
 		if !exitedAt.IsZero() && time.Since(exitedAt) > 2*time.Second {
