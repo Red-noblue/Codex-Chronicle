@@ -2251,7 +2251,7 @@
     if (!updateStatus?.state.active_version || updateLoading || !window.confirm('现在重新启动应用，使已准备好的版本生效？已有任务会先正常完成。')) return;
     updateLoading = true;
     try {
-      const response = await apiFetch('/api/v1/update/restart', { method: 'POST' });
+      const response = await apiFetch('/api/v1/update/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: updateStatus.state.active_version }) });
       const body = await response.json() as { restart_scheduled?: boolean; version?: string; error?: string };
       if (!response.ok || !body.restart_scheduled || !body.version) throw new Error(body.error || '未能安排重启');
       await waitForUpdateRestart(body.version);

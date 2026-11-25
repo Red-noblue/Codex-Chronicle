@@ -33,7 +33,9 @@ func TestUpdateRestartCapabilityAndPartialSuccess(t *testing.T) {
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRecorder()
-		handler.ServeHTTP(r, httptest.NewRequest(method, path, strings.NewReader(body)))
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(r, request)
 		return r
 	}
 	body, _ := json.Marshal(map[string]any{"plan_id": plan.ID, "restart": true})
@@ -64,7 +66,18 @@ func TestUpdateRestartCapabilityAndPartialSuccess(t *testing.T) {
 		}
 		return nil
 	})
-	r = call(http.MethodPost, "/api/v1/update/restart", "")
+	for _, body := range []string{`{}`, `{"version":"过期的版本"}`, `{"version":"2.0.0"} {}`} {
+		r = call(http.MethodPost, "/api/v1/update/restart", body)
+		if r.Code < 400 || calls != 0 {
+			t.Fatal("缺失、过期或混入尾随数据的确认触发了重启")
+		}
+	}
+	form := httptest.NewRecorder()
+	handler.ServeHTTP(form, httptest.NewRequest(http.MethodPost, "/api/v1/update/restart", strings.NewReader(`{"version":"2.0.0"}`)))
+	if form.Code != http.StatusUnsupportedMediaType || calls != 0 {
+		t.Fatal("普通网页表单可直接触发重启")
+	}
+	r = call(http.MethodPost, "/api/v1/update/restart", `{"version":"2.0.0"}`)
 	if r.Code != http.StatusAccepted || calls != 1 {
 		t.Fatalf("未安排待生效版本重启：%s", r.Body.String())
 	}
@@ -73,7 +86,7 @@ func TestUpdateRestartCapabilityAndPartialSuccess(t *testing.T) {
 		t.Fatal("GET 请求触发了重启")
 	}
 	s.SetVersion("2.0.0")
-	r = call(http.MethodPost, "/api/v1/update/restart", "")
+	r = call(http.MethodPost, "/api/v1/update/restart", `{"version":"2.0.0"}`)
 	if r.Code != http.StatusConflict || calls != 1 {
 		t.Fatal("没有待生效版本仍重复安排重启")
 	}

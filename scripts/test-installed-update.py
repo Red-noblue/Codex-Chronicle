@@ -194,7 +194,7 @@ def main():
         print("通过：签名正确但无法启动的候选被拒绝，当前版本和运行后台继续可用", flush=True)
 
         request("/api/v1/update/rollback", {})
-        assert request("/api/v1/update/restart", {}, 202)["restart_scheduled"]
+        assert request("/api/v1/update/restart", {"version": old_version}, 202)["restart_scheduled"]
         assert await_restart(second["id"], old_version)["version"] == old_version
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"

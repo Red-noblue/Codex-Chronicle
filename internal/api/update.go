@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 )
@@ -219,9 +220,23 @@ func (s *Server) updateRestartHandler(writer http.ResponseWriter, request *http.
 		writeError(writer, http.StatusConflict, "当前运行方式不支持应用内重启")
 		return
 	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(writer, http.StatusUnsupportedMediaType, "重启请求必须使用 application/json")
+		return
+	}
+	var input struct {
+		Version string `json:"version"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || input.Version == "" {
+		writeError(writer, http.StatusBadRequest, "必须明确提供本次确认重启的版本")
+		return
+	}
 	status, err := s.updater.Status(request.Context())
-	if err != nil || status.State.ActiveVersion == "" || status.State.ActiveVersion == s.version || status.RecoveryRequired {
-		writeError(writer, http.StatusConflict, "没有已准备好且等待重启的版本")
+	if err != nil || status.State.ActiveVersion != input.Version || status.State.ActiveVersion == s.version || status.RecoveryRequired {
+		writeError(writer, http.StatusConflict, "待生效版本已变化或没有可重启的更新，请刷新后确认")
 		return
 	}
 	if err := s.updateRestart(request.Context(), status.State.ActiveVersion); err != nil {
