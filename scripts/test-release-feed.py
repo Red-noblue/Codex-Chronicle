@@ -55,7 +55,7 @@ class ReleaseFeedTests(unittest.TestCase):
         self.assertEqual(stable["channel"], "stable")
         self.assertEqual(preview["channel"], "preview")
         self.assertEqual(stable["feed_url"], "https://github.com/Red-noblue/Codex-Chronicle/releases/latest/download/codex-chronicle-feed.json")
-        self.assertEqual(preview["feed_url"], "https://api.github.com/repos/Red-noblue/Codex-Chronicle/releases?per_page=100")
+        self.assertEqual(preview["feed_url"], "https://raw.githubusercontent.com/Red-noblue/Codex-Chronicle/update-feeds/preview.json")
 
     def test_invalid_versions_and_repository_are_rejected(self):
         for version in ["v1.2.3", "1.2", "01.2.3", "1.2.3-preview.01", "1.2.3;echo bad", "1.2.3-rc.1"]:
@@ -106,6 +106,53 @@ class ReleaseFeedTests(unittest.TestCase):
                     damaged[0][scenario] = {"state": "new", "size": 0, "digest": "sha256:wrong"}[scenario]
                 with self.assertRaises(ValueError):
                     release_feed.verify_uploaded_assets(self.output, dict(release, assets=damaged), self.version)
+
+    def test_preview_promotion_is_idempotent_and_never_rolls_back(self):
+        self.fixtures()
+        self.assemble()
+        source = self.output / release_feed.FEED_NAME
+        channel = self.root / "channel" / "preview.json"
+        self.assertTrue(release_feed.promote_preview_feed(source, channel, self.version, self.repository))
+        original = channel.read_bytes()
+        self.assertFalse(release_feed.promote_preview_feed(source, channel, self.version, self.repository))
+        newer = self.version.replace("preview.12", "preview.13")
+        source.write_text(original.decode().replace(self.version, newer), encoding="utf-8")
+        self.assertTrue(release_feed.promote_preview_feed(source, channel, newer, self.repository))
+        latest = channel.read_bytes()
+        source.write_bytes(original)
+        self.assertFalse(release_feed.promote_preview_feed(source, channel, self.version, self.repository))
+        self.assertEqual(channel.read_bytes(), latest)
+
+    def test_changed_same_version_or_invalid_feed_never_overwrites_channel(self):
+        self.fixtures()
+        self.assemble()
+        source = self.output / release_feed.FEED_NAME
+        original = source.read_bytes()
+        channel = self.root / "preview.json"
+        channel.write_bytes(original)
+        for scenario in ("changed", "missing", "duplicate", "wrong-repository", "wrong-version", "bad-digest", "bad-size", "stable"):
+            feed = json.loads(original)
+            item = feed["releases"][0]
+            if scenario == "changed":
+                item["sha256"] = "0" * 64
+            elif scenario == "missing":
+                feed["releases"].pop()
+            elif scenario == "duplicate":
+                feed["releases"][-1] = item.copy()
+            elif scenario == "wrong-repository":
+                item["url"] = item["url"].replace(self.repository, "someone/else")
+            elif scenario == "wrong-version":
+                item["version"] = "9.9.9-preview.1"
+            elif scenario == "bad-digest":
+                item["sha256"] = "invalid"
+            elif scenario == "bad-size":
+                item["size_bytes"] = True
+            else:
+                feed["channel"] = "stable"
+            source.write_text(json.dumps(feed), encoding="utf-8")
+            with self.subTest(scenario=scenario), self.assertRaises(ValueError):
+                release_feed.promote_preview_feed(source, channel, self.version, self.repository)
+            self.assertEqual(channel.read_bytes(), original)
 
     def test_corrupt_or_missing_asset_never_creates_output(self):
         for scenario in ["digest", "missing", "duplicate", "unsafe-name", "wrong-platform", "wrong-version"]:

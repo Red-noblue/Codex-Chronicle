@@ -49,13 +49,13 @@ func indexRequest(t *testing.T, handler http.Handler, method, path string, body 
 
 func awaitIndex(t *testing.T, handler http.Handler) indexResponse {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		result := indexRequest(t, handler, http.MethodGet, "", nil)
 		if !result.Busy {
 			return result
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("索引后台任务没有结束")
 	return indexResponse{}

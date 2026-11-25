@@ -298,3 +298,45 @@ jobs:
           else
             gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
           fi
+  preview-channel:
+    name: 更新静态预览通道
+    needs: [release-config, release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.release-config.outputs.channel == 'preview'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: chronicle-preview-channel
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 原子推进已公开版本的静态索引
+        shell: bash
+        run: |
+          chronicle_channel="$(mktemp -d)"
+          chronicle_feed="$(mktemp -d)"
+          trap 'rm -rf -- "$chronicle_channel" "$chronicle_feed"' EXIT
+          gh release download "$GITHUB_REF_NAME" --pattern codex-chronicle-feed.json --dir "$chronicle_feed"
+          git -C "$chronicle_channel" init -q -b update-feeds
+          git -C "$chronicle_channel" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if git -C "$chronicle_channel" ls-remote --exit-code --heads origin refs/heads/update-feeds > "$RUNNER_TEMP/chronicle-channel-ref"; then
+            git -C "$chronicle_channel" fetch -q --depth=1 origin refs/heads/update-feeds
+            git -C "$chronicle_channel" checkout -q -B update-feeds FETCH_HEAD
+          else
+            chronicle_status=$?
+            [[ "$chronicle_status" == 2 ]] || exit "$chronicle_status"
+          fi
+          python3 scripts/release-feed.py promote-preview "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --feed-json "$chronicle_feed/codex-chronicle-feed.json" --output "$chronicle_channel/preview.json"
+          git -C "$chronicle_channel" add -- preview.json
+          if git -C "$chronicle_channel" diff --cached --quiet; then
+            echo '静态预览通道已是相同或更新版本'
+            exit 0
+          fi
+          git -C "$chronicle_channel" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "更新预览通道到 $CHRONICLE_VERSION"
+          git -C "$chronicle_channel" -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD:refs/heads/update-feeds

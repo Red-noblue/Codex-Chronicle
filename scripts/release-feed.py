@@ -20,7 +20,7 @@ def release_config(version, repository):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("仓库必须采用 owner/repository 形式")
     preview = "-preview." in version
-    feed_url = (f"https://api.github.com/repos/{repository}/releases?per_page=100" if preview else
+    feed_url = (f"https://raw.githubusercontent.com/{repository}/update-feeds/preview.json" if preview else
                 f"https://github.com/{repository}/releases/latest/download/{FEED_NAME}")
     return {"version": version, "channel": "preview" if preview else "stable", "feed_url": feed_url}
 
@@ -126,14 +126,71 @@ def verify_uploaded_assets(output, release, version):
             raise ValueError(f"GitHub 草稿资产摘要不匹配：{path.name}")
 
 
+def validate_preview_feed(feed, version, repository):
+    if not isinstance(version, str) or release_config(version, repository)["channel"] != "preview":
+        raise ValueError("预览通道只能接收预览版本")
+    if not isinstance(feed, dict) or (feed.get("format_version"), feed.get("product"), feed.get("channel")) != (1, "codex-chronicle", "preview"):
+        raise ValueError("预览更新索引格式或产品不匹配")
+    releases = feed.get("releases")
+    expected = expected_packages(version)
+    if not isinstance(releases, list) or len(releases) != len(expected):
+        raise ValueError("预览更新索引必须完整覆盖六个平台")
+    seen = set()
+    for item in releases:
+        if not isinstance(item, dict):
+            raise ValueError("预览更新条目无效")
+        platform = (item.get("os"), item.get("arch"))
+        if not all(isinstance(value, str) for value in platform):
+            raise ValueError("预览更新条目缺少有效平台")
+        names = expected.get(platform)
+        if names is None or platform in seen or item.get("version") != version:
+            raise ValueError("预览更新条目的版本或平台重复、不匹配")
+        if item.get("url") != f"https://github.com/{repository}/releases/download/v{version}/{names[0]}":
+            raise ValueError("预览更新下载地址必须指向本版本的唯一 ZIP")
+        if not isinstance(item.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) or type(item.get("size_bytes")) is not int or item["size_bytes"] <= 0:
+            raise ValueError("预览更新条目的摘要或大小无效")
+        seen.add(platform)
+
+
+def promote_preview_feed(source, output, version, repository):
+    data = source.read_bytes()
+    feed = json.loads(data)
+    validate_preview_feed(feed, version, repository)
+    if output.is_symlink():
+        raise ValueError("预览通道文件不能是符号链接")
+    if output.exists():
+        previous = json.loads(output.read_text(encoding="utf-8"))
+        items = previous.get("releases") if isinstance(previous, dict) else None
+        if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+            raise ValueError("现有预览通道无效，拒绝覆盖")
+        old_version = items[0].get("version")
+        validate_preview_feed(previous, old_version, repository)
+
+        def preview_order(value):
+            core, number = value.split("-preview.")
+            return tuple(int(part) for part in core.split(".")) + (int(number),)
+
+        if preview_order(old_version) > preview_order(version):
+            return False
+        if old_version == version:
+            order = lambda item: (item["os"], item["arch"])
+            if sorted(previous["releases"], key=order) != sorted(feed["releases"], key=order):
+                raise ValueError("同一版本的预览更新内容已变化，拒绝覆盖")
+            return False
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(data)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="校验发布资产并生成固定渠道配置与更新索引")
-    parser.add_argument("command", choices=("config", "feed-url", "assemble", "verify-upload"))
+    parser.add_argument("command", choices=("config", "feed-url", "assemble", "verify-upload", "promote-preview"))
     parser.add_argument("version")
     parser.add_argument("--repository", default="Red-noblue/Codex-Chronicle")
     parser.add_argument("--artifacts", type=Path, default=Path("release-assets"))
     parser.add_argument("--output", type=Path, default=Path("publish"))
     parser.add_argument("--release-json", type=Path)
+    parser.add_argument("--feed-json", type=Path)
     args = parser.parse_args()
     try:
         config = release_config(args.version, args.repository)
@@ -147,6 +204,11 @@ def main():
                 raise ValueError("上传核验必须指定 --release-json")
             verify_uploaded_assets(args.output, json.loads(args.release_json.read_text(encoding="utf-8")), args.version)
             print("GitHub 草稿资产核验通过")
+        elif args.command == "promote-preview":
+            if args.feed_json is None:
+                raise ValueError("更新预览通道必须指定 --feed-json")
+            changed = promote_preview_feed(args.feed_json, args.output, args.version, args.repository)
+            print("预览通道已更新" if changed else "预览通道已是相同或更新版本，无需覆盖")
         else:
             feed = assemble_release(args.artifacts, args.output, args.version, args.repository)
             print(f"发布资产验证通过：{args.version} / {config['channel']} / {len(feed['releases'])} 个平台更新包")
