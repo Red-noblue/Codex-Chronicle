@@ -41,6 +41,16 @@ type releaseOptions struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "verify-archive" {
+		manifest, err := verifyArchiveCommand(context.Background(), os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(manifest); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "keygen" || os.Args[1] == "key-info") {
 		info, err := signingKeyCommand(os.Args[1], os.Args[2:])
 		if err != nil {

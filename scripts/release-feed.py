@@ -110,9 +110,9 @@ def assemble_release(artifacts, output, version, repository):
     return feed
 
 
-def verify_uploaded_assets(output, release, version):
-    if release.get("tag_name") != "v" + version or release.get("draft") is not True:
-        raise ValueError("上传核验只接受当前标签的未公开草稿")
+def verify_uploaded_assets(output, release, version, *, require_draft=True):
+    if release.get("tag_name") != "v" + version or release.get("draft") is not require_draft:
+        raise ValueError("上传核验的标签或草稿状态不匹配")
     assets = release.get("assets", [])
     expected = {path.name: path for path in output.iterdir() if path.is_file()}
     if len(assets) != len(expected) or {asset.get("name") for asset in assets} != set(expected):
@@ -122,7 +122,7 @@ def verify_uploaded_assets(output, release, version):
         if asset.get("state") != "uploaded" or asset.get("size") != path.stat().st_size:
             raise ValueError(f"GitHub 草稿资产未上传完成或大小不匹配：{path.name}")
         digest = asset.get("digest")
-        if digest and digest != "sha256:" + file_digest(path):
+        if digest != "sha256:" + file_digest(path):
             raise ValueError(f"GitHub 草稿资产摘要不匹配：{path.name}")
 
 

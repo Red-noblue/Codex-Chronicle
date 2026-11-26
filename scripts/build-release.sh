@@ -8,6 +8,7 @@ chronicle_os="${2:-$(go env GOOS)}"
 chronicle_arch="${3:-$(go env GOARCH)}"
 chronicle_default_feed_url="$(python3 "$chronicle_root/scripts/release-feed.py" feed-url "$chronicle_version" --repository "${GITHUB_REPOSITORY:-Red-noblue/Codex-Chronicle}")"
 chronicle_update_feed_url="${CHRONICLE_UPDATE_FEED_URL:-$chronicle_default_feed_url}"
+chronicle_build_id="${CHRONICLE_BUILD_ID:-}"
 case "$chronicle_os/$chronicle_arch" in
   darwin/arm64|darwin/amd64|windows/amd64|windows/arm64|linux/amd64|linux/arm64) ;;
   *) echo '当前发布脚本尚未支持此系统和架构' >&2; exit 1 ;;
@@ -61,12 +62,18 @@ chronicle_release_args=(--version "$chronicle_version" --os "$chronicle_os" --ar
   --launcher "$chronicle_temp/codex-chronicle-desktop$chronicle_suffix"
   --trash-bridge "$chronicle_temp/chronicle-native-trash$chronicle_suffix" --web-dist web/dist
   --license-file LICENSE --third-party-notices-file THIRD_PARTY_NOTICES.txt)
+if [[ -n "$chronicle_build_id" ]]; then chronicle_release_args+=(--build-id "$chronicle_build_id"); fi
 if [[ -n "${CHRONICLE_SIGNING_PRIVATE_KEY_FILE:-}" ]]; then
   chronicle_release_args+=(--signing-private-key-file "$CHRONICLE_SIGNING_PRIVATE_KEY_FILE" --signing-key-id "${CHRONICLE_SIGNING_KEY_ID:-release}")
 fi
 go run ./cmd/codex-chronicle-release "${chronicle_release_args[@]}" --format directory --output "$chronicle_output/payload"
 go run ./cmd/codex-chronicle-release "${chronicle_release_args[@]}" --format zip \
   --output "$chronicle_output/Codex-Chronicle-$chronicle_version-$chronicle_os-$chronicle_arch.zip"
+if [[ -n "${CHRONICLE_SIGNING_PRIVATE_KEY_FILE:-}" && -n "$chronicle_build_id" && "$chronicle_os" == "$(go env GOOS)" && "$chronicle_arch" == "$(go env GOARCH)" ]]; then
+  go run ./cmd/codex-chronicle-release verify-archive \
+    --archive "$chronicle_output/Codex-Chronicle-$chronicle_version-$chronicle_os-$chronicle_arch.zip" \
+    --trusted-public-key-file packaging/update-signing.pub --version "$chronicle_version" --build-id "$chronicle_build_id" --startup-check > "$chronicle_temp/final-archive.json"
+fi
 if [[ "$chronicle_os" == linux ]]; then
   tar -czf "$chronicle_output/Codex-Chronicle-$chronicle_version-linux-$chronicle_arch.tar.gz" -C "$chronicle_output/payload" .
 fi

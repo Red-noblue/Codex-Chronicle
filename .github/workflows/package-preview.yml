@@ -1,15 +1,32 @@
-# 中文说明：验证正式版与预览版的固定更新渠道，先校验并上传完整草稿，再公开版本；不访问用户 Codex 数据。
+# 中文说明：先冻结并验收候选，再选择同一份产物公开到不可变 Release；验证和公开步骤均不重新构建。
 name: 验证与发布
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
     inputs:
-      version:
-        description: 仅构建、不公开发布，例如 0.1.0 或 0.1.0-preview.12
+      operation:
+        description: 构建候选、验证已有候选，或公开已有候选
         required: true
+        default: candidate
+        type: choice
+        options: [candidate, verify, publish]
+      version:
+        description: 固定目标版本，例如 0.1.0-preview.16；同一公开版本不允许替换
+        required: true
+        type: string
+      candidate_run_id:
+        description: 验证或公开时填写已成功的候选构建编号
+        required: false
+        type: string
+      candidate_sha256:
+        description: 验证或公开时填写冻结候选清单的 SHA-256
+        required: false
+        type: string
+      release_notes:
+        description: 构建候选时可指定仓库内已审核的说明文件；正式版必须指定
+        required: false
         type: string
 permissions:
   contents: read
@@ -18,6 +35,7 @@ env:
 jobs:
   test:
     name: 回归 / ${{ matrix.runner }}
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'candidate'
     strategy:
       fail-fast: false
       matrix:
@@ -25,20 +43,22 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
       - name: 发布资产与渠道回归
-        run: python scripts/test-release-feed.py
+        run: |
+          python scripts/test-release-feed.py
+          python scripts/test-release-candidate.py
       - name: Linux 桌面协议与原生窗口依赖
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y dbus-x11 zenity xvfb xauth xdotool desktop-file-utils at-spi2-core python3-pyatspi
@@ -84,15 +104,15 @@ jobs:
   release-config:
     name: 确定版本与更新渠道
     needs: test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'candidate'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.config.outputs.version }}
       channel: ${{ steps.config.outputs.channel }}
       feed-url: ${{ steps.config.outputs.feed_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
       - name: 校验正式版本或预览版本
@@ -100,16 +120,12 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
-            chronicle_version="${GITHUB_REF#refs/tags/v}"
-          else
-            chronicle_version="$INPUT_VERSION"
-          fi
+          chronicle_version="$INPUT_VERSION"
           python3 scripts/release-feed.py config "$chronicle_version" --repository "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
   package:
     name: 安装包 / ${{ matrix.os }}-${{ matrix.arch }}
     needs: release-config
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'candidate'
     strategy:
       fail-fast: false
       matrix:
@@ -135,20 +151,21 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
+      CHRONICLE_BUILD_ID: ${{ github.sha }}
       CHRONICLE_ARCH: ${{ matrix.arch }}
       CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
       CHRONICLE_UPDATE_FEED_URL: ${{ needs.release-config.outputs.feed-url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
       - name: 安装前端构建依赖
@@ -181,7 +198,12 @@ jobs:
           PY
       - name: 构建共同载荷与平台便携包
         shell: bash
-        run: bash scripts/build-release.sh "$CHRONICLE_VERSION" '${{ matrix.os }}' "$CHRONICLE_ARCH"
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || exit 1
+          git diff --exit-code HEAD
+          [[ -z "$(git ls-files --others --exclude-standard)" ]] || { echo '构建前出现未追踪源文件' >&2; exit 1; }
+          [[ "$(go env GOOS)/$(go env GOARCH)" == '${{ matrix.os }}/${{ matrix.arch }}' ]] || { echo '发布包必须在匹配的原生运行器验收' >&2; exit 1; }
+          bash scripts/build-release.sh "$CHRONICLE_VERSION" '${{ matrix.os }}' "$CHRONICLE_ARCH"
       - name: 生成 Windows 每用户安装器
         if: matrix.os == 'windows'
         shell: pwsh
@@ -226,7 +248,7 @@ jobs:
                       result.write(hashlib.file_digest(source, 'sha256').hexdigest() + '  ' + package.name + '\n')
           PY
       - name: 上传安装包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Codex-Chronicle-${{ matrix.os }}-${{ matrix.arch }}
           if-no-files-found: error
@@ -245,67 +267,145 @@ jobs:
           if [[ -n "${CHRONICLE_SIGNING_PRIVATE_KEY_FILE:-}" ]]; then
             rm -f -- "$CHRONICLE_SIGNING_PRIVATE_KEY_FILE"
           fi
-  release:
-    name: 核验草稿并公开版本
+  seal:
+    name: 冻结候选与构建来源
     needs: [release-config, package]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'candidate'
     runs-on: ubuntu-latest
-    concurrency:
-      group: chronicle-public-release
-      cancel-in-progress: false
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     env:
       CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
-      CHRONICLE_CHANNEL: ${{ needs.release-config.outputs.channel }}
+      CHRONICLE_NOTES: ${{ inputs.release_notes }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: Codex-Chronicle-*
           path: release-assets
-      - name: 核对摘要并准备发布资产
-        run: python3 scripts/release-feed.py assemble "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY"
-      - name: 创建或恢复未公开草稿并上传资产
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: 冻结最终安装包与发布说明
+        id: freeze
+        shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > "$RUNNER_TEMP/chronicle-draft-state"; then
-            [[ "$(cat "$RUNNER_TEMP/chronicle-draft-state")" == true ]] || { echo '该版本已公开，拒绝覆盖发布资产' >&2; exit 1; }
-            gh release upload "$GITHUB_REF_NAME" publish/* --clobber
-          else
-            chronicle_args=(--draft --verify-tag --title "Codex Chronicle $CHRONICLE_VERSION")
-            if [[ "$CHRONICLE_CHANNEL" == preview ]]; then
-              chronicle_args+=(--prerelease --notes-file packaging/预览版说明.md)
-            else
-              chronicle_args+=(--generate-notes)
-            fi
-            gh release create "$GITHUB_REF_NAME" publish/* "${chronicle_args[@]}"
+          python3 scripts/release-feed.py assemble "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY"
+          chronicle_notes=()
+          if [[ -n "$CHRONICLE_NOTES" ]]; then chronicle_notes=(--notes-file "$CHRONICLE_NOTES"); fi
+          python3 scripts/release-candidate.py seal --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" "${chronicle_notes[@]}" | tee "$RUNNER_TEMP/candidate-digest"
+          cat "$RUNNER_TEMP/candidate-digest" >> "$GITHUB_OUTPUT"
+          {
+            echo '### 已冻结发布候选'
+            echo "版本：\`$CHRONICLE_VERSION\`"
+            echo "源码：\`$GITHUB_SHA\`"
+            echo "构建编号：\`$GITHUB_RUN_ID\`，尝试：\`$GITHUB_RUN_ATTEMPT\`"
+            echo "清单摘要：\`$(cut -d= -f2 "$RUNNER_TEMP/candidate-digest")\`"
+            echo '正式发布必须选择本次冻结产物，并再次验证构建来源。'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 生成构建来源证明
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: publish/*
+      - name: 保存不可覆盖的冻结候选
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Codex-Chronicle-candidate-${{ env.CHRONICLE_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: publish/*
+  inspect:
+    name: 验证已验收候选
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == 'verify' || inputs.operation == 'publish')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    outputs:
+      artifact-id: ${{ steps.selection.outputs.artifact_id }}
+      channel: ${{ steps.config.outputs.channel }}
+      source-commit: ${{ steps.selection.outputs.source_commit }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHRONICLE_VERSION: ${{ inputs.version }}
+      CHRONICLE_SOURCE_RUN: ${{ inputs.candidate_run_id }}
+      CHRONICLE_CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+      CHRONICLE_OPERATION: ${{ inputs.operation }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: 绑定成功构建与唯一冻结产物
+        id: selection
+        shell: bash
+        run: |
+          [[ "$CHRONICLE_CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo '必须指定已验收候选清单的 SHA-256' >&2; exit 1; }
+          chronicle_publish=()
+          if [[ "$CHRONICLE_OPERATION" == publish ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main ]] || { echo '公开发布只能从 main 执行' >&2; exit 1; }
+            chronicle_publish=(--for-publish)
           fi
-      - name: 验证 GitHub 草稿资产与摘要
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          chronicle_release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)"
-          [[ "$chronicle_release_id" =~ ^[1-9][0-9]*$ ]] || { echo '无法取得草稿 Release ID，拒绝公开' >&2; exit 1; }
-          gh api "repos/$GITHUB_REPOSITORY/releases/$chronicle_release_id" > "$RUNNER_TEMP/chronicle-release.json"
-          python3 scripts/release-feed.py verify-upload "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --release-json "$RUNNER_TEMP/chronicle-release.json"
-      - name: 公开版本并设置渠道
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "$CHRONICLE_CHANNEL" == preview ]]; then
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
-          else
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
-          fi
+          python3 scripts/release-candidate.py select --run-id "$CHRONICLE_SOURCE_RUN" --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" "${chronicle_publish[@]}" >> "$GITHUB_OUTPUT"
+      - name: 确定固定更新通道
+        id: config
+        run: python3 scripts/release-feed.py config "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.selection.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: candidate
+      - name: 验证冻结字节和 OIDC 构建身份
+        run: python3 scripts/release-candidate.py verify --root candidate --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --expected-sha256 "$CHRONICLE_CANDIDATE_SHA" --selection "$RUNNER_TEMP/selection.json" --attestation
+  release:
+    name: 推广同一候选到不可变 Release
+    needs: inspect
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: chronicle-public-release
+      cancel-in-progress: false
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHRONICLE_VERSION: ${{ inputs.version }}
+      CHRONICLE_SOURCE_RUN: ${{ inputs.candidate_run_id }}
+      CHRONICLE_CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: 重新绑定所选验收记录
+        run: python3 scripts/release-candidate.py select --run-id "$CHRONICLE_SOURCE_RUN" --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --for-publish
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.inspect.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: candidate
+      - name: 只上传缺失资产并公开同一份候选
+        run: python3 scripts/release-candidate.py publish --root candidate --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --expected-sha256 "$CHRONICLE_CANDIDATE_SHA" --selection "$RUNNER_TEMP/selection.json"
   update-channel:
     name: 更新静态版本通道
-    needs: [release-config, release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [inspect, release]
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: chronicle-update-feeds
@@ -314,11 +414,11 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      CHRONICLE_VERSION: ${{ needs.release-config.outputs.version }}
-      CHRONICLE_CHANNEL: ${{ needs.release-config.outputs.channel }}
+      CHRONICLE_VERSION: ${{ inputs.version }}
+      CHRONICLE_CHANNEL: ${{ needs.inspect.outputs.channel }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
       - name: 原子推进已公开版本的静态索引
@@ -327,7 +427,7 @@ jobs:
           chronicle_channel="$(mktemp -d)"
           chronicle_feed="$(mktemp -d)"
           trap 'rm -rf -- "$chronicle_channel" "$chronicle_feed"' EXIT
-          gh release download "$GITHUB_REF_NAME" --pattern codex-chronicle-feed.json --dir "$chronicle_feed"
+          gh release download "v$CHRONICLE_VERSION" --pattern codex-chronicle-feed.json --dir "$chronicle_feed"
           git -C "$chronicle_channel" init -q -b update-feeds
           git -C "$chronicle_channel" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
           if git -C "$chronicle_channel" ls-remote --exit-code --heads origin refs/heads/update-feeds > "$RUNNER_TEMP/chronicle-channel-ref"; then

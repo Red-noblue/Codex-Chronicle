@@ -97,11 +97,13 @@ class ReleaseFeedTests(unittest.TestCase):
         for field, value in [("draft", False), ("tag_name", "v9.9.9")]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 release_feed.verify_uploaded_assets(self.output, dict(release, **{field: value}), self.version)
-        for scenario in ["missing", "state", "size", "digest"]:
+        for scenario in ["missing", "state", "size", "digest", "no-digest"]:
             with self.subTest(scenario=scenario):
                 damaged = [dict(asset) for asset in assets]
                 if scenario == "missing":
                     damaged.pop()
+                elif scenario == "no-digest":
+                    damaged[0].pop("digest")
                 else:
                     damaged[0][scenario] = {"state": "new", "size": 0, "digest": "sha256:wrong"}[scenario]
                 with self.assertRaises(ValueError):
