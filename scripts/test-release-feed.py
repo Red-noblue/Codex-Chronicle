@@ -54,7 +54,7 @@ class ReleaseFeedTests(unittest.TestCase):
         preview = release_feed.release_config(self.version, self.repository)
         self.assertEqual(stable["channel"], "stable")
         self.assertEqual(preview["channel"], "preview")
-        self.assertEqual(stable["feed_url"], "https://github.com/Red-noblue/Codex-Chronicle/releases/latest/download/codex-chronicle-feed.json")
+        self.assertEqual(stable["feed_url"], "https://raw.githubusercontent.com/Red-noblue/Codex-Chronicle/update-feeds/stable.json")
         self.assertEqual(preview["feed_url"], "https://raw.githubusercontent.com/Red-noblue/Codex-Chronicle/update-feeds/preview.json")
 
     def test_invalid_versions_and_repository_are_rejected(self):
@@ -152,6 +152,41 @@ class ReleaseFeedTests(unittest.TestCase):
             source.write_text(json.dumps(feed), encoding="utf-8")
             with self.subTest(scenario=scenario), self.assertRaises(ValueError):
                 release_feed.promote_preview_feed(source, channel, self.version, self.repository)
+            self.assertEqual(channel.read_bytes(), original)
+
+    def test_policy_preserves_packages_and_survives_new_release(self):
+        self.fixtures()
+        feed = self.assemble()
+        source = self.output / release_feed.FEED_NAME
+        channel = self.root / "preview.json"
+        release_feed.promote_channel_feed(source, channel, self.version, self.repository)
+        self.assertTrue(release_feed.set_channel_policy(channel, self.version, self.repository, "pause", reason="检查兼容性"))
+        self.assertTrue(release_feed.set_channel_policy(channel, self.version, self.repository, "withdraw", self.version, "启动异常"))
+        policy = json.loads(channel.read_bytes())
+        self.assertEqual(policy["releases"], [])
+        self.assertEqual(policy["held_releases"], feed["releases"])
+        newer = self.version.replace("preview.12", "preview.13")
+        source.write_text(json.dumps(feed).replace(self.version, newer), encoding="utf-8")
+        self.assertTrue(release_feed.promote_channel_feed(source, channel, newer, self.repository))
+        policy = json.loads(channel.read_bytes())
+        self.assertTrue(policy["updates_paused"])
+        self.assertEqual(policy["withdrawn_versions"], [{"version": self.version, "reason": "启动异常"}])
+        self.assertTrue(release_feed.set_channel_policy(channel, newer, self.repository, "resume"))
+        self.assertFalse(json.loads(channel.read_bytes())["updates_paused"])
+        self.assertEqual(json.loads(channel.read_bytes())["withdrawn_versions"], policy["withdrawn_versions"])
+        self.assertEqual(len(json.loads(channel.read_bytes())["releases"]), 6)
+        self.assertNotIn("held_releases", json.loads(channel.read_bytes()))
+
+    def test_stable_channel_promotion_and_policy_validation(self):
+        self.version = "1.2.3"
+        self.fixtures()
+        self.assemble()
+        channel = self.root / "stable.json"
+        self.assertTrue(release_feed.promote_channel_feed(self.output / release_feed.FEED_NAME, channel, self.version, self.repository))
+        original = channel.read_bytes()
+        for action, version, reason in [("withdraw", "1.2.3-preview.1", "错误通道"), ("pause", "", ""), ("resume", "1.2.3", ""), ("withdraw", "invalid", "无效版本")]:
+            with self.subTest(action=action, version=version), self.assertRaises(ValueError):
+                release_feed.set_channel_policy(channel, self.version, self.repository, action, version, reason)
             self.assertEqual(channel.read_bytes(), original)
 
     def test_corrupt_or_missing_asset_never_creates_output(self):

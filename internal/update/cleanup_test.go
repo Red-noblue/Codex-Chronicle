@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestCleanupRequiresRunningVersionAndPreservesRollbackAndBaseline(t *testing.T) {
+func TestCleanupWaitsForGracePeriodAndExpiresRollbackAndBaseline(t *testing.T) {
 	m, err := NewManager(filepath.Join(t.TempDir(), "updates"))
 	if err != nil {
 		t.Fatal(err)
@@ -34,14 +35,36 @@ func TestCleanupRequiresRunningVersionAndPreservesRollbackAndBaseline(t *testing
 	if _, err := os.Stat(obsolete); err != nil {
 		t.Fatal("新版本未启动就删除了历史版本")
 	}
-	result, err := m.ConfirmRunning(t.Context(), "4.0.0")
-	if err != nil || result.RemovedItems != 1 || result.FreedBytes == 0 {
+	now := time.Now().UTC()
+	result, err := m.confirmRunningAt(t.Context(), "4.0.0", now)
+	if err != nil || result.RemovedItems != 0 {
+		t.Fatalf("观察期内提前清理：%+v %v", result, err)
+	}
+	status, err := m.Status(t.Context())
+	if err != nil || status.State.CleanupAfter == nil || !status.State.CleanupAfter.Equal(now.Add(CleanupGracePeriod)) {
+		t.Fatalf("未持久化清理时间：%+v %v", status, err)
+	}
+	// 模拟重启后重新建立管理器，观察期不能重新计时。
+	m, err = NewManager(m.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.confirmRunningAt(t.Context(), "4.0.0", now.Add(CleanupGracePeriod-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"1.0.0", "2.0.0", "3.0.0", "4.0.0"} {
+		if err := m.VerifyVersionRoot(t.Context(), filepath.Join(m.root, VersionDir, version)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err = m.confirmRunningAt(t.Context(), "4.0.0", now.Add(CleanupGracePeriod))
+	if err != nil || result.RemovedItems != 3 || result.FreedBytes == 0 {
 		t.Fatalf("清理结果错误：%+v %v", result, err)
 	}
 	if _, err := os.Stat(obsolete); !os.IsNotExist(err) {
 		t.Fatal("未清理不再使用的历史版本")
 	}
-	for _, version := range []string{"1.0.0", "3.0.0", "4.0.0"} {
+	for _, version := range []string{"4.0.0"} {
 		if err := m.VerifyVersionRoot(t.Context(), filepath.Join(m.root, VersionDir, version)); err != nil {
 			t.Fatalf("受保护版本 %s 损坏：%v", version, err)
 		}
@@ -49,10 +72,10 @@ func TestCleanupRequiresRunningVersionAndPreservesRollbackAndBaseline(t *testing
 	if _, err := os.Stat(baseline); err != nil {
 		t.Fatal("外部安装来源被删除")
 	}
-	if _, err := m.Rollback(t.Context(), m.VerifyVersionRoot); err != nil {
-		t.Fatalf("清理后无法回滚：%v", err)
+	if _, err := m.Rollback(t.Context(), m.VerifyVersionRoot); err == nil {
+		t.Fatal("过期后仍提供已清理的回滚版本")
 	}
-	status, err := m.Status(t.Context())
+	status, err = m.Status(t.Context())
 	if err != nil || status.LastCleanup == nil || status.LastCleanup.RunningVersion != "4.0.0" {
 		t.Fatalf("清理记录未持久化：%+v %v", status, err)
 	}
@@ -120,7 +143,11 @@ func TestCleanupPreservesPendingPlansExternalPackagesAndUnknownFiles(t *testing.
 	if err := os.WriteFile(filepath.Join(retired, "上次清理的残余文件"), []byte("可安全重试"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ConfirmRunning(t.Context(), "2.0.0"); err != nil {
+	now := time.Now().UTC()
+	if _, err := m.confirmRunningAt(t.Context(), "2.0.0", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.confirmRunningAt(t.Context(), "2.0.0", now.Add(CleanupGracePeriod)); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{used.DownloadPath, used.BundleRoot, retired} {

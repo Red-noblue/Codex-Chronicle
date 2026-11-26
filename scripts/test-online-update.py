@@ -73,6 +73,11 @@ func main(){seed,err:=os.ReadFile(os.Args[1]);if err!=nil{panic(err)};fmt.Print(
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path == "/continue":
+                release_download.set()
+                self.send_response(200)
+                self.end_headers()
+                return
             if self.path == "/feed.json":
                 value = dict(release, url=f"http://127.0.0.1:{self.server.server_port}/release.zip")
                 body = json.dumps({"format_version": 1, "product": "codex-chronicle", "releases": [value]}).encode()
@@ -81,7 +86,18 @@ func main(){seed,err:=os.ReadFile(os.Args[1]);if err!=nil{panic(err)};fmt.Print(
                 if body is None:
                     self.send_error(404)
                     return
-            self.send_response(200)
+            offset = 0
+            if self.path == "/release.zip" and self.headers.get("Range"):
+                value = self.headers["Range"]
+                assert value.startswith("bytes=") and value.endswith("-")
+                offset = int(value[6:-1])
+                assert 0 < offset < len(body)
+            total = len(body)
+            body = body[offset:]
+            self.send_response(206 if offset else 200)
+            if offset:
+                self.send_header("Content-Range", f"bytes {offset}-{total-1}/{total}")
+            self.send_header("ETag", '"' + hashlib.sha256(payloads.get(self.path, body)).hexdigest() + '"')
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if self.path == "/release.zip" and slow_download.is_set():
@@ -159,6 +175,7 @@ func main(){seed,err:=os.ReadFile(os.Args[1]);if err!=nil{panic(err)};fmt.Print(
         assert check["check"]["release"]["version"] == new_version
         browser = project / ".local/ui/browser.mjs"
         if browser.exists() and pathlib.Path("/Applications/Google Chrome.app").exists():
+            slow_download.set()
             script = '''// 中文说明：浏览器只在隔离后台点击在线检查和下载预检，版本切换由后续测试控制。
 import {openBrowser} from './.local/ui/browser.mjs';
 const b=await openBrowser();
@@ -168,16 +185,23 @@ try{
  await b.evaluate(`[...document.querySelectorAll('.update-online button')].find(e=>e.textContent.includes('检查在线更新')).click()`);
  await b.waitFor('document.querySelector(".update-online-release")');
  await b.evaluate(`[...document.querySelectorAll('.update-online button')].find(e=>e.textContent.includes('下载并预检')).click()`);
+ await b.waitFor('document.querySelector(".update-panel progress")?.value > 0');
+ await b.evaluate('document.querySelector(".update-panel").scrollIntoView({block:"center"})');
+ const progress=await b.evaluate('({value:document.querySelector(".update-panel progress").value,max:document.querySelector(".update-panel progress").max,width:document.querySelector(".update-panel progress").getBoundingClientRect().width,parent:document.querySelector(".update-panel").getBoundingClientRect().width})');
+ if(progress.value!==1024||progress.max<=progress.value||progress.width>progress.parent)throw Error('下载进度数值或布局错误：'+JSON.stringify(progress));
+ if(process.env.CHRONICLE_TEST_PROGRESS_SCREENSHOT){const fs=await import('node:fs/promises');const shot=await b.send('Page.captureScreenshot',{format:'png'});await fs.writeFile(process.env.CHRONICLE_TEST_PROGRESS_SCREENSHOT,Buffer.from(shot.data,'base64'));}
+ await fetch(process.env.CHRONICLE_TEST_FEED_URL+'/continue');
  await b.waitFor('document.querySelector(".update-plan")',60000);
  if(b.events.some(e=>e.method==='Runtime.exceptionThrown'))throw Error('更新页面有运行异常');
  await b.screenshot('online-update-isolated');
-}finally{await b.close()}
+}finally{await fetch(process.env.CHRONICLE_TEST_FEED_URL+'/continue').catch(()=>{});await b.close()}
 '''
-            run(["node", "--input-type=module", "-e", script], cwd=project, env=dict(environment, CHRONICLE_TEST_UPDATE_UI_URL=address))
+            run(["node", "--input-type=module", "-e", script], cwd=project, env=dict(environment, CHRONICLE_TEST_UPDATE_UI_URL=address, CHRONICLE_TEST_FEED_URL=f"http://127.0.0.1:{feed.server_port}"))
+            slow_download.clear()
             plans = request("/api/v1/update/status")["status"]["pending_plan_ids"]
             assert len(plans) == 1
             plan_id = plans[0]
-            print("通过：真实浏览器在线检查、下载并预检，生成待确认计划，无前端运行异常", flush=True)
+            print("通过：真实浏览器显示下载字节进度、布局不溢出，下载并预检生成计划，无前端运行异常", flush=True)
         else:
             plan_id = request("/api/v1/update/prepare-online", {}, 201)["plan"]["id"]
         activated = request("/api/v1/update/activate", {"plan_id": plan_id})["result"]
@@ -217,13 +241,14 @@ try{
         assert hashlib.sha256(sample.read_bytes()).hexdigest() == original
         print("通过：回滚后实际运行旧版本、项目数据库与源样本均保留", flush=True)
 
-        # 下载进行中只强杀本次 Popen 的隔离后台；随后真实重启应自动清理失去租约的下载。
+        # 下载进行中只强杀本次 Popen 的隔离后台；重启后保留片段并从 HTTP Range 继续下载。
         current = request("/api/v1/update/rollback", {})["result"]
         assert current["active_version"] == new_version
         stop()
         start(pathlib.Path(current["version_root"]))
         assert request("/healthz")["version"] == new_version
         slow_download.set()
+        release_download.clear()
         interrupted = []
 
         def downloading():
@@ -235,7 +260,7 @@ try{
         download_thread = threading.Thread(target=downloading, daemon=True)
         download_thread.start()
         deadline = time.monotonic() + 10
-        while not any(path.stat().st_size for path in (updates / "bundles").glob("*.tmp")):
+        while not any(path.stat().st_size for path in (updates / "partials").glob("*.part")):
             assert time.monotonic() < deadline, "下载没有抵达强杀检查点"
             time.sleep(.05)
         daemon_process.kill()
@@ -246,14 +271,16 @@ try{
         download_thread.join(timeout=10)
         assert interrupted and not download_thread.is_alive(), "进程被强杀后下载请求未结束"
         start(pathlib.Path(current["version_root"]))
+        assert any(path.stat().st_size == 1024 for path in (updates / "partials").glob("*.part")), "重启后续传片段丢失"
         assert not list((updates / "bundles").glob("*.tmp"))
         assert not list((updates / "bundles").glob("*.tmp.lock"))
         assert request("/healthz")["version"] == new_version
         assert request("/api/v1/update/status")["status"]["state"]["active_version"] == new_version
         retry_plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
         assert retry_plan["version"] == "99.0.0"
+        assert not list((updates / "partials").glob("*.part")), "续传成功后仍保留片段"
         assert hashlib.sha256(sample.read_bytes()).hexdigest() == original
-        print("通过：实际后台下载中强杀、重启自动清理半成品、原版本继续可用、重新下载成功", flush=True)
+        print("通过：实际后台下载中强杀，重启后保留片段并续传成功，原版本与源文件继续可用", flush=True)
     finally:
         try:
             stop()

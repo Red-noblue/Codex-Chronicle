@@ -2,6 +2,7 @@
 # 中文说明：使用临时签名和本机更新源，验证真实安装入口的首次基线、完整版本重启、坏候选拒绝及回滚；不修改用户安装。
 from contextlib import closing
 import hashlib
+from datetime import datetime, timedelta, timezone
 import http.server
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -42,12 +44,16 @@ def main():
     seed.write_bytes(os.urandom(32))
     seed.chmod(0o600)
     release = {}
+    policy = {}
     artifacts = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path in ("/preview.json", "/stable.json"):
-                body = json.dumps({"format_version": 1, "product": "codex-chronicle", "releases": [release]}).encode()
+                feed = {"format_version": 1, "product": "codex-chronicle", "releases": [release], **policy}
+                if policy.get("updates_paused") or any(item["version"] == release.get("version") for item in policy.get("withdrawn_versions", [])):
+                    feed["held_releases"], feed["releases"] = feed["releases"], []
+                body = json.dumps(feed).encode()
             else:
                 body = artifacts.get(self.path)
                 if body is None:
@@ -69,9 +75,9 @@ def main():
     launcher = None
     safe_to_cleanup = True
 
-    def request(path, body=None, expected=200):
+    def request(path, body=None, expected=200, method=None):
         data = None if body is None else json.dumps(body).encode()
-        value = urllib.request.Request(address + path, data=data, headers={"Content-Type": "application/json"})
+        value = urllib.request.Request(address + path, data=data, headers={"Content-Type": "application/json"}, method=method)
         try:
             response = opener.open(value, timeout=120)
         except urllib.error.HTTPError as error:
@@ -81,10 +87,13 @@ def main():
             assert response.status == expected, (path, response.status, result)
             return result
 
-    def launch(entry):
+    def launch(entry, use_saved_address=False):
         nonlocal address, safe_to_cleanup
         safe_to_cleanup = False
-        instance = json.loads(run([entry, "--no-browser", "--data-dir", profile, "--address", "127.0.0.1:0"], env=environment))
+        arguments = [entry, "--no-browser", "--data-dir", profile]
+        if not use_saved_address:
+            arguments += ["--address", "127.0.0.1:0"]
+        instance = json.loads(run(arguments, env=environment))
         address = instance["url"]
         return instance
 
@@ -105,8 +114,8 @@ def main():
                     continue
                 address = current["url"]
                 state = request("/api/v1/update/status")
-                cleanup = state["status"].get("last_cleanup", {})
-                if request("/healthz")["version"] == expected_version and cleanup.get("running_version") == expected_version:
+                confirmed = state["status"]["state"].get("confirmed_at")
+                if request("/healthz")["version"] == expected_version and confirmed:
                     return current
             except (OSError, ValueError, AssertionError):
                 continue
@@ -128,7 +137,7 @@ def main():
         run(["go", "build", "-o", packager, "./cmd/codex-chronicle-release"], cwd=project, env=environment)
         run(["go", "build", "-o", trash, "./cmd/chronicle-native-trash"], cwd=project, env=environment)
 
-        def package(version, name, feed_path, bad=False):
+        def package(version, name, feed_path, bad=False, fail_profile=False, source_project=project):
             binaries = scratch / (name + "-bin")
             binaries.mkdir()
             daemon = binaries / ("codex-chronicle" + suffix)
@@ -138,9 +147,24 @@ def main():
                 failure.write_text('// 中文说明：仅为本轮隔离验证制造无法启动的已签名候选。\npackage main\nimport "os"\nfunc main(){os.Exit(31)}\n', encoding="utf-8")
                 run(["go", "build", "-o", daemon, failure], cwd=project, env=environment)
             else:
-                run(["go", "build", "-ldflags", "-X main.version=" + version, "-o", daemon, "./cmd/codex-chronicle"], cwd=project, env=environment)
+                run(["go", "build", "-ldflags", "-X main.version=" + version, "-o", daemon, "./cmd/codex-chronicle"], cwd=source_project, env=environment)
+            if fail_profile:
+                # 预检使用空白 profile 时正常；仅本测试的实际 profile 启动时模拟写坏数据库后失败。
+                reference = binaries / ("reference-daemon" + suffix)
+                shutil.copy2(daemon, reference)
+                failure = scratch / "profile-failing-daemon.go"
+                failure.write_text('''// 中文说明：仅为隔离演练制造预检通过、真实启动写入失败的候选。
+package main
+import ("os";"os/exec";"path/filepath")
+func main(){
+ for i,arg:=range os.Args[1:]{if arg=="--archive-db"&&i+2<len(os.Args){p:=os.Args[i+2];dir,_:=filepath.EvalSymlinks(filepath.Dir(p));if dir==PROFILE{_ = os.WriteFile(p,[]byte("模拟失败迁移"),0600);os.Exit(32)}}}
+ cmd:=exec.Command(REFERENCE,os.Args[1:]...);cmd.Stdout=os.Stdout;cmd.Stderr=os.Stderr
+ if err:=cmd.Run();err!=nil{os.Exit(33)}
+}
+'''.replace('PROFILE', json.dumps(str(profile.resolve()))).replace('REFERENCE', json.dumps(str(reference.resolve()))), encoding="utf-8")
+                run(["go", "build", "-o", daemon, failure], cwd=project, env=environment)
             run(["go", "build", "-ldflags", f"-X main.version={version} -X main.updateFeedURL={base_url}{feed_path}",
-                 "-o", entry, "./cmd/codex-chronicle-desktop"], cwd=project, env=environment)
+                 "-o", entry, "./cmd/codex-chronicle-desktop"], cwd=source_project, env=environment)
             arguments = [packager, "--version", version, "--daemon", daemon, "--launcher", entry, "--trash-bridge", trash,
                          "--web-dist", project / "web/dist", "--signing-private-key-file", seed, "--signing-key-id", "temporary-test-key"]
             payload, archive = scratch / name, scratch / (name + ".zip")
@@ -151,8 +175,11 @@ def main():
         old_version, new_version, later_version = "1.0.0-preview.1", "1.0.0", "1.1.0"
         old, _, old_args = package(old_version, "installed", "/preview.json")
         new, new_archive, new_args = package(new_version, "updated", "/stable.json")
+        if os.environ.get("CHRONICLE_TEST_BROWSER") == "1":
+            print(run([sys.executable, project / "scripts/test-online-update.py", old, new], env=environment), end="", flush=True)
         launcher = old / ("bin/codex-chronicle-desktop" + suffix)
         first = launch(launcher)
+        request("/api/v1/update/automatic", {"enabled": False}, method="PUT")
         (profile / "startup.json").write_text(json.dumps({"port": urllib.parse.urlsplit(address).port, "auto_fallback": True}), encoding="utf-8")
         state = request("/api/v1/update/status")["status"]
         assert first["version"] == old_version
@@ -169,6 +196,15 @@ def main():
         select_release(new_version, new_archive)
         plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
         assert plan["previous_version"] == old_version
+        policy["withdrawn_versions"] = [{"version": new_version, "reason": "隔离演练：撤回已下载候选"}]
+        failure = request("/api/v1/update/activate", {"plan_id": plan["id"]}, 409)
+        assert "撤回" in failure["error"] and request("/healthz")["version"] == old_version
+        policy.clear()
+        policy.update(updates_paused=True, pause_reason="隔离演练：暂停安装")
+        failure = request("/api/v1/update/activate", {"plan_id": plan["id"]}, 409)
+        assert "暂停" in failure["error"] and request("/healthz")["version"] == old_version
+        policy.clear()
+        print("通过：已下载候选在切换前重新核验撤回和暂停策略，原版本继续可用", flush=True)
         response = request("/api/v1/update/activate", {"plan_id": plan["id"], "restart": True})
         assert response["restart_scheduled"], response
         first_url = address
@@ -179,10 +215,10 @@ def main():
         assert state["state"]["previous_version"] == old_version
         assert state["online_feed_url"] == base_url + "/stable.json", "旧启动器沿用了旧更新渠道"
         assert not request("/api/v1/update/check")["available"]
-        assert state["last_cleanup"]["removed_items"] >= 2, state
-        assert not list((profile / "updates/bundles").iterdir()), "成功更新后压缩包或预检副本仍然残留"
+        assert state["state"]["confirmed_at"] and state["state"]["cleanup_after"], state
+        assert list((profile / "updates/bundles").glob("download-*.archive")), "观察期内提前清理了安装包"
         assert new_archive.is_file(), "清理触碰了应用缓存外的源安装包"
-        print("通过：应用内更新自动退出并重启到新版本，恢复原端口和新渠道，自动清理压缩包与预检副本", flush=True)
+        print("通过：应用内更新自动退出并重启到新版本，恢复原端口和新渠道，持久化 24 小时恢复窗口", flush=True)
 
         _, bad_archive, _ = package(later_version, "bad", "/stable.json", bad=True)
         select_release(later_version, bad_archive)
@@ -195,11 +231,26 @@ def main():
 
         request("/api/v1/update/rollback", {})
         assert request("/api/v1/update/restart", {"version": old_version}, 202)["restart_scheduled"]
-        assert await_restart(second["id"], old_version)["version"] == old_version
+        second = await_restart(second["id"], old_version)
+        assert second["version"] == old_version
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"
             assert database.execute("SELECT value FROM installed_update_marker").fetchone()[0] == "跨版本保留"
         print("通过：从原入口重启实际回滚到旧版本，数据库记录保留", flush=True)
+
+        _, startup_bad_archive, _ = package("1.0.1", "startup-failing", "/stable.json", fail_profile=True)
+        select_release("1.0.1", startup_bad_archive)
+        startup_bad_plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
+        response = request("/api/v1/update/activate", {"plan_id": startup_bad_plan["id"], "restart": True})
+        assert response["restart_scheduled"], response
+        second = await_restart(second["id"], old_version)
+        state = request("/api/v1/update/status")["status"]["state"]
+        assert state["last_status"] == "startup_rolled_back" and state["rejected_version"] == "1.0.1", state
+        with closing(sqlite3.connect(profile / "archive.db")) as database:
+            assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            assert database.execute("SELECT value FROM installed_update_marker").fetchone()[0] == "跨版本保留"
+        assert not (profile / "updates/restart-journal.json").exists(), "启动失败恢复后遗留事务"
+        print("通过：候选预检通过但真实启动失败，已自动恢复旧版本、数据库和设置，并抑制失败版本", flush=True)
 
         stop()
         later, _, _ = package(later_version, "new-installer", "/stable.json")
@@ -207,7 +258,7 @@ def main():
         assert launch(launcher)["version"] == later_version
         state = request("/api/v1/update/status")["status"]["state"]
         assert state["installed_version"] == later_version and state["previous_version"] == old_version
-        assert not (profile / "updates/versions" / new_version).exists(), "不再使用的历史版本没有自动清理"
+        assert (profile / "updates/versions" / new_version).exists(), "观察期内提前清理了旧版本"
         assert (profile / "updates/versions" / old_version).is_dir(), "清理破坏了可回滚版本"
         assert (profile / "updates/versions" / later_version).is_dir(), "清理破坏了安装基线"
         assert Path(bad_plan["bundle_root"]).is_dir(), "清理删除了仍待处理的候选版本"
@@ -217,6 +268,65 @@ def main():
         assert hashlib.sha256(sample.read_bytes()).hexdigest() == original
         stop()
         print("通过：新安装器不被旧指针遮蔽，人工回滚不会被下次打开撤销，源文件摘要不变", flush=True)
+
+        # 停止隔离实例后推进持久化截止时间，验证到期清理，无需等待真实 24 小时。
+        state_path = profile / "updates/install-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["confirmed_at"] = (datetime.now(timezone.utc)-timedelta(hours=25)).isoformat()
+        state["cleanup_after"] = (datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        (profile / "updates/automatic-settings.json").write_text('{"enabled":false}', encoding="utf-8")
+        assert launch(launcher)["version"] == old_version
+        state = request("/api/v1/update/status")["status"]
+        assert state["last_cleanup"]["removed_items"] >= 3 and not state["state"].get("previous_version"), state
+        assert not (profile / "updates/versions" / new_version).exists(), "观察期结束仍保留无用历史版本"
+        assert not (profile / "updates/versions/1.0.1").exists(), "失败版本未在恢复窗口结束后清理"
+        assert Path(bad_plan["bundle_root"]).is_dir() and new_archive.is_file(), "清理影响待处理计划或外部安装包"
+        stop()
+        print("通过：恢复窗口到期后清理历史安装包与旧版本，关闭自动更新不影响清理，保留待处理计划与外部离线包", flush=True)
+
+        legacy_ref = os.environ.get("CHRONICLE_TEST_LEGACY_REF", "")
+        if legacy_ref:
+            # 旧发布标签使用真实源码与临时测试签名构建；不使用正式签名私钥，也不触碰用户安装。
+            legacy_source = scratch / "legacy-source"
+            legacy_source.mkdir()
+            legacy_archive = scratch / "legacy-source.tar"
+            run(["git", "archive", "--format=tar", "--output", legacy_archive, legacy_ref], cwd=project)
+            with tarfile.open(legacy_archive) as archive:
+                assert all(item.isfile() or item.isdir() for item in archive.getmembers()), "旧源码含链接或特殊文件"
+                archive.extractall(legacy_source, filter="data")
+            legacy_version = legacy_ref.removeprefix("v")
+            legacy, _, _ = package(legacy_version, "legacy-published-source", "/preview.json", source_project=legacy_source)
+            profile = scratch / "legacy-profile"
+            profile.mkdir()
+            (profile / "launcher.json").write_text(json.dumps({"scan_root": str(source)}), encoding="utf-8")
+            launcher = legacy / ("bin/codex-chronicle-desktop" + suffix)
+            legacy_instance = launch(launcher)
+            assert legacy_instance["version"] == legacy_version
+            port = urllib.parse.urlsplit(address).port
+            (profile / "startup.json").write_text(json.dumps({"port": port, "auto_fallback": True}), encoding="utf-8")
+            with closing(sqlite3.connect(profile / "archive.db")) as database:
+                database.execute("CREATE TABLE published_legacy_marker(value TEXT)")
+                database.execute("INSERT INTO published_legacy_marker VALUES ('旧公开版本数据')")
+                database.commit()
+            select_release(new_version, new_archive)
+            policy.update(updates_paused=True, pause_reason="隔离演练：兼容旧版的暂停")
+            assert not request("/api/v1/update/check", expected=502)["available"], "旧版忽略暂停后仍发现可下载版本"
+            policy.clear()
+            legacy_plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
+            request("/api/v1/update/activate", {"plan_id": legacy_plan["id"]})
+            stop()
+            updated = launch(launcher, use_saved_address=True)
+            assert updated["version"] == new_version, updated
+            assert urllib.parse.urlsplit(address).port == port, "旧版升级后端口设置丢失"
+            state = request("/api/v1/update/status")["status"]
+            assert state["state"].get("confirmed_at") and state["state"].get("cleanup_after"), state
+            with closing(sqlite3.connect(profile / "archive.db")) as database:
+                assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+                assert database.execute("SELECT value FROM published_legacy_marker").fetchone()[0] == "旧公开版本数据"
+            assert hashlib.sha256(sample.read_bytes()).hexdigest() == original
+            stop()
+            print(f"通过：从 {legacy_ref} 发布标签源码升级，原入口交接新版，保留数据库、端口与原始源文件", flush=True)
 
         if sys.platform == "darwin":
             old_app, new_app = scratch / "old.app", scratch / "new.app"

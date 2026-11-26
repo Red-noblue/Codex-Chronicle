@@ -60,6 +60,16 @@ func (m *Manager) RegisterInstallation(ctx context.Context, bundleRoot, expected
 	} else if !os.IsNotExist(err) {
 		return err
 	} else {
+		var bytes int64
+		for _, file := range manifest.Files {
+			if file.SizeBytes > (1<<63-1)-bytes {
+				return errors.New("安装基线体积超过有效范围")
+			}
+			bytes += file.SizeBytes
+		}
+		if err := m.requireDiskSpace(bytes, "保存安装基线"); err != nil {
+			return err
+		}
 		id, err := newID("baseline")
 		if err != nil {
 			return err
@@ -89,6 +99,8 @@ func (m *Manager) RegisterInstallation(ctx context.Context, bundleRoot, expected
 		}
 		state.ActiveVersion = manifest.Version
 		state.LastStatus, state.LastError = "installed", ""
+		state.ConfirmedAt, state.CleanupAfter = nil, nil
+		state.Online, state.DeferredVersion = nil, ""
 	} else if state.PreviousVersion == "" && state.ActiveVersion != manifest.Version {
 		state.PreviousVersion = manifest.Version
 	}

@@ -403,6 +403,8 @@
       previous_version?: string;
       last_status?: string;
       last_error?: string;
+      confirmed_at?: string;
+      cleanup_after?: string;
       updated_at?: string;
     };
     versions: string[];
@@ -416,6 +418,8 @@
     online_feed_url?: string;
     online_proxy_url?: string;
     last_cleanup?: { running_version: string; removed_items: number; freed_bytes: number; warnings?: string[]; completed_at: string };
+    automatic?: { enabled: boolean; phase: string; plan_id?: string; target_version?: string; last_error?: string; last_checked_at?: string; next_check_at?: string };
+    download?: { version: string; received_bytes: number; total_bytes: number; resumed: boolean };
   };
   type OnlineRelease = {
     version: string;
@@ -433,6 +437,8 @@
     available: boolean;
     release?: OnlineRelease;
     checked_at: string;
+    updates_paused?: boolean;
+    pause_reason?: string;
   };
   type UpdatePreflight = {
     status: string;
@@ -979,6 +985,7 @@
   let updateStatus: UpdateStatus | null = null;
   let updateRunningVersion = '';
   let updateRestartAvailable = false;
+  let updateAutomaticAvailable = false;
   let updateRestartRequired = false;
   let updatePreflight: UpdatePreflight | null = null;
   let onlineUpdate: OnlineCheck | null = null;
@@ -988,6 +995,8 @@
   let updatePlan: UpdatePlan | null = null;
   let updateBundleRoot = '';
   let updateLoading = false;
+  let updateAction: 'check' | 'proxy' | 'download' | 'offline' | '' = '';
+  let updateStatusPolling = false;
   let updateMessage = '';
   let projectRelation: ProjectRelationReport | null = null;
   let projectLoading = false;
@@ -1259,7 +1268,21 @@
       if (applicationStarted && inventoryReady) void loadExecutionTasks();
       if (applicationStarted && activeWorkspace === 'settings' && settingsCategory === 'remote') void loadGitHubStatus();
     };
-    const handleVisibility = () => { if (document.visibilityState === 'visible') handleFocus(); };
+    const reportUpdateActivity = () => {
+      if (applicationStarted && document.visibilityState === 'visible') {
+        void apiFetch('/api/v1/update/activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(async (response) => {
+          if (!response.ok) return;
+          const body = await response.json() as { running_version?: string };
+          if (updateRunningVersion && body.running_version && body.running_version !== updateRunningVersion) window.location.reload();
+        }).catch(() => {});
+        if (activeWorkspace === 'settings' && updateStatus) void refreshAutomaticUpdateStatus();
+      }
+    };
+    const updateActivityTimer = window.setInterval(reportUpdateActivity, 30_000);
+    const updateProgressTimer = window.setInterval(() => {
+      if (applicationStarted && document.visibilityState === 'visible' && activeWorkspace === 'settings' && updateStatus && (updateLoading || updateStatus.automatic?.phase === 'downloading')) void refreshAutomaticUpdateStatus();
+    }, 2_000);
+    const handleVisibility = () => { if (document.visibilityState === 'visible') { handleFocus(); reportUpdateActivity(); } };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
       if (document.querySelector('dialog[open]')) return;
       if (isEditableTarget(event.target)) {
@@ -1302,6 +1325,8 @@
       searchController?.abort();
       if (githubPollTimer) clearTimeout(githubPollTimer);
       if (executionPollTimer) clearTimeout(executionPollTimer);
+      window.clearInterval(updateActivityTimer);
+      window.clearInterval(updateProgressTimer);
       window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener('popstate', handlePopstate);
       window.removeEventListener('focus', handleFocus);
@@ -2108,10 +2133,11 @@
     try {
       const response = await apiFetch('/api/v1/update/status');
       if (!response.ok) throw new Error(`读取更新状态失败（HTTP ${response.status}）`);
-      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string; running_version?: string; restart_available?: boolean; restart_required?: boolean };
+      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string; running_version?: string; restart_available?: boolean; restart_required?: boolean; automatic_available?: boolean };
       updateStatus = body.available && body.status ? body.status : null;
       updateRunningVersion = body.running_version || '';
       updateRestartAvailable = body.restart_available === true;
+      updateAutomaticAvailable = body.automatic_available === true;
       updateRestartRequired = body.restart_required === true;
       updateProxyURL = updateStatus?.online_proxy_url || '';
       if (updateProxyURL) {
@@ -2129,27 +2155,62 @@
     }
   }
 
+  const automaticUpdateLabels: Record<string, string> = {
+    disabled: '已关闭', idle: '等待检查', checking: '正在检查', downloading: '正在下载',
+    waiting_idle: '已准备好，空闲时更新', activating: '正在安装', restart_pending: '等待空闲重启', up_to_date: '暂无可用更新',
+    failed: '暂未完成，稍后重试', blocked_version: '已跳过不可用版本',
+    paused: '发布方已暂停在线更新',
+  };
+
+  async function refreshAutomaticUpdateStatus() {
+    if (updateStatusPolling) return;
+    updateStatusPolling = true;
+    try {
+      const response = await apiFetch('/api/v1/update/status');
+      const body = await response.json() as { status?: UpdateStatus };
+      if (response.ok && body.status && updateStatus) updateStatus = { ...updateStatus, state: body.status.state, automatic: body.status.automatic, last_cleanup: body.status.last_cleanup, download: body.status.download };
+    } catch { /* 状态轮询失败时保留已显示的设置。 */ }
+    finally { updateStatusPolling = false; }
+  }
+
+  async function setAutomaticUpdate(control: HTMLInputElement) {
+    if (updateLoading) return;
+    const enabled = control.checked;
+    updateLoading = true;
+    try {
+      const response = await apiFetch('/api/v1/update/automatic', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const body = await response.json() as { status?: UpdateStatus; error?: string };
+      if (!response.ok || !body.status) throw new Error(body.error || '无法保存自动更新设置');
+      updateStatus = body.status;
+      updateMessage = enabled ? '已开启自动更新。' : '已关闭自动更新，仍可手动检查。';
+    } catch (error) { updateMessage = error instanceof Error ? error.message : '无法保存自动更新设置'; }
+    finally { control.checked = updateStatus?.automatic?.enabled !== false; updateLoading = false; }
+  }
+
   async function checkOnlineUpdate() {
     if (!updateStatus?.online_configured || updateLoading) return;
     updateLoading = true;
+    updateAction = 'check';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/check');
       const body = (await response.json()) as { check?: OnlineCheck; available?: boolean; error?: string };
       if (!response.ok || !body.check) throw new Error(body.error || `在线版本检查失败（HTTP ${response.status}）`);
       onlineUpdate = body.check;
-      updateMessage = body.check.available && body.check.release ? `发现 ${body.check.release.version} 可用更新，请下载并预检。` : '当前已没有更高版本。';
+      updateMessage = body.check.updates_paused ? `发布方已暂停在线更新${body.check.pause_reason ? `：${body.check.pause_reason}` : '。'}` : body.check.available && body.check.release ? `发现 ${body.check.release.version} 可用更新，请下载并预检。` : '当前已没有更高版本。';
     } catch (error) {
       onlineUpdate = null;
       updateMessage = error instanceof Error ? error.message : '在线版本检查失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
   async function saveUpdateProxy() {
     if (!updateStatus || updateLoading) return;
     updateLoading = true;
+    updateAction = 'proxy';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/proxy', {
@@ -2172,12 +2233,14 @@
       updateMessage = error instanceof Error ? error.message : '保存更新代理失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
   async function prepareOnlineUpdate() {
     if (!onlineUpdate?.available || !onlineUpdate.release || updateLoading) return;
     updateLoading = true;
+    updateAction = 'download';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/prepare-online', {
@@ -2192,6 +2255,7 @@
       updateMessage = error instanceof Error ? error.message : '在线更新预检失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
@@ -2212,6 +2276,7 @@
       return;
     }
     updateLoading = true;
+    updateAction = 'offline';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/prepare', {
@@ -2227,6 +2292,7 @@
       updateMessage = error instanceof Error ? error.message : '更新预检失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
@@ -2241,6 +2307,11 @@
         if (response.ok && health.status === 'ok' && health.version === expectedVersion) {
           window.location.reload();
           return;
+        }
+        if (response.ok && health.status === 'ok' && health.version !== expectedVersion) {
+          const statusResponse = await apiFetch('/api/v1/update/status');
+          const statusBody = await statusResponse.json() as { status?: UpdateStatus };
+          if (statusResponse.ok && statusBody.status?.state.last_status === 'startup_rolled_back') { window.location.reload(); return; }
         }
       } catch { /* 旧后台退出与新后台启动之间短暂断开连接是正常现象。 */ }
     }
@@ -2262,14 +2333,14 @@
     }
   }
 
-  async function activateUpdate(restart = false) {
-    if (!updatePlan || updateLoading || !window.confirm(restart ? `更新到 ${updatePlan.version} 并重新启动应用？已有任务会先正常完成。` : `准备更新到 ${updatePlan.version}？稍后重新启动应用时生效。`)) return;
+  async function activateUpdate(restart = false, plan: Pick<UpdatePlan, 'id' | 'version'> | null = updatePlan) {
+    if (!plan || updateLoading || !window.confirm(restart ? `更新到 ${plan.version} 并重新启动应用？已有任务会先正常完成。` : `准备更新到 ${plan.version}？稍后重新启动应用时生效。`)) return;
     updateLoading = true;
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/activate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: updatePlan.id, restart })
+        body: JSON.stringify({ plan_id: plan.id, restart })
       });
       const body = (await response.json()) as { result?: { active_version?: string }; error?: string; restart_scheduled?: boolean; restart_error?: string };
       if (!response.ok || !body.result) throw new Error(body.error || `更新切换失败（HTTP ${response.status}）`);
@@ -5221,11 +5292,19 @@
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('updates')}
-        <SettingsPanel id="updates">
+        <SettingsPanel id="updates" helpText="默认后台检查、下载和验签。网页不可见且后台任务空闲 5 分钟后自动重启，不主动打开浏览器；也可手动立即更新。启动失败会恢复旧版本和启动前的项目数据库与设置。确认成功 24 小时后清理本应用下载的安装包、预检副本和旧版本，截止时间跨重启保留；文件占用时重试，关闭自动更新不影响清理。保留当前程序、系统入口和待处理更新，不删除外部离线包，也不改动原始对话。观察期后不再提供旧版本一键回退。">
       {#if updateStatus}
       <div class="update-panel">
-        <div class="section-label">应用更新</div>
+        {#if updateAutomaticAvailable && updateStatus.online_configured}
+          <div class="update-status-line"><label class="update-automatic-toggle"><input type="checkbox" checked={updateStatus.automatic?.enabled !== false} on:change={(event) => setAutomaticUpdate(event.currentTarget)} disabled={updateLoading} />自动更新</label></div>
+          {#if !updateStatus.download}<small class="copy-note">{automaticUpdateLabels[updateStatus.automatic?.phase || 'idle'] || '等待检查'}{updateStatus.automatic?.target_version ? ` · ${updateStatus.automatic.target_version}` : ''}</small>{/if}
+          {#if updateStatus.automatic?.phase === 'waiting_idle' && updateStatus.automatic.plan_id && updateStatus.automatic.target_version && !updatePlan}<button class="copy-confirm" disabled={updateLoading || updatePreflight?.blocked} on:click={() => activateUpdate(true, { id: updateStatus?.automatic?.plan_id || '', version: updateStatus?.automatic?.target_version || '' })}>立即更新并重启</button>{/if}
+          {#if updateStatus.automatic?.last_error}<HelpBubble id="automatic-update-error" label="自动更新详情" text={updateStatus.automatic.last_error} />{/if}
+        {/if}
         <div class="update-status-line"><span>正在运行</span><strong>{updateRunningVersion || updateStatus.state.active_version || '未激活'}</strong></div>
+        {#if updateStatus.state.last_status === 'startup_rolled_back'}<div class="update-warning">更新未完成，已恢复旧版本。<HelpBubble id="update-startup-rollback" label="更新恢复详情" text={updateStatus.state.last_error || '新版本未通过实际启动检查，已恢复项目数据库与设置。此版本不会被自动重复安装。'} /></div>{/if}
+        {#if updateStatus.state.last_status === 'update_postponed'}<div class="update-warning">更新已暂缓，继续使用旧版本。<HelpBubble id="update-postponed" label="更新暂缓详情" text={updateStatus.state.last_error || '待网络或磁盘条件恢复后可重新更新。'} /></div>{/if}
+        {#if updateStatus.download}<div class="update-status-line"><span>{updateStatus.download.resumed ? '正在续传' : '正在下载'}</span><span>{formatBytes(updateStatus.download.received_bytes)} / {formatBytes(updateStatus.download.total_bytes)}</span></div><progress max={updateStatus.download.total_bytes} value={Math.min(updateStatus.download.received_bytes, updateStatus.download.total_bytes)} aria-label="更新包下载进度"></progress>{/if}
         {#if updateRestartRequired}<div class="update-status-line"><span>重启后生效</span><strong>{updateStatus.state.active_version}</strong></div>{#if updateRestartAvailable}<button class="copy-confirm" on:click={restartUpdate} disabled={updateLoading}>立即重启</button>{/if}{/if}
         {#if updateStatus.state.previous_version}<div class="update-status-line"><span>可回滚版本</span><strong>{updateStatus.state.previous_version}</strong></div>{/if}
         <div class="update-status-line"><span>清单签名</span><strong>{updateStatus.signature_required ? `强制 · ${updateStatus.trusted_key_count} 个信任根` : '可用但未强制'}</strong></div>
@@ -5236,22 +5315,24 @@
             <div class="update-online-head"><span>更新来源</span><small>{updateStatus.online_feed_url || '已配置'}</small></div>
             <div class="update-proxy-field"><label for="update-proxy-scheme">代理协议</label><select id="update-proxy-scheme" bind:value={updateProxyScheme} disabled={updateLoading}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5h</option></select><label for="update-proxy-address">代理地址</label><input id="update-proxy-address" bind:value={updateProxyAddress} autocomplete="off" spellcheck="false" placeholder="127.0.0.1:7890" disabled={updateLoading} /></div>
             <small class="copy-note">代理仅用于更新检查和下载。留空地址可关闭代理。</small>
-            <button class="secondary-button" on:click={saveUpdateProxy} disabled={updateLoading}>{updateLoading ? '保存中…' : '保存代理设置'}</button>
-            <button class="secondary-button" on:click={checkOnlineUpdate} disabled={updateLoading}>{updateLoading ? '检查中…' : '检查在线更新'}</button>
+            <button class="secondary-button" on:click={saveUpdateProxy} disabled={updateLoading}>{updateAction === 'proxy' ? '保存中…' : '保存代理设置'}</button>
+            <button class="secondary-button" on:click={checkOnlineUpdate} disabled={updateLoading}>{updateAction === 'check' ? '检查中…' : '检查在线更新'}</button>
             {#if onlineUpdate?.available && onlineUpdate.release}
-              <div class="update-online-release"><strong>{onlineUpdate.release.version}</strong><span>{onlineUpdate.release.os}/{onlineUpdate.release.arch} · {formatBytes(onlineUpdate.release.size_bytes)}</span><button class="copy-confirm" on:click={prepareOnlineUpdate} disabled={updateLoading}>下载并预检</button></div>
+              <div class="update-online-release"><strong>{onlineUpdate.release.version}</strong><span>{onlineUpdate.release.os}/{onlineUpdate.release.arch} · {formatBytes(onlineUpdate.release.size_bytes)}</span><button class="copy-confirm" on:click={prepareOnlineUpdate} disabled={updateLoading}>{updateAction === 'download' ? '下载预检中…' : '下载并预检'}</button></div>
+            {:else if onlineUpdate?.updates_paused}
+              <small class="copy-note">发布方暂缓了在线更新，当前版本可继续使用。</small>
             {:else if onlineUpdate}
               <small class="copy-note">检查于 {formatTime(onlineUpdate.checked_at)}，当前没有更高版本。</small>
             {/if}
           </div>
         {/if}
         <input bind:value={updateBundleRoot} placeholder="离线包目录或 ZIP/TAR 文件绝对路径" aria-label="离线包目录或 ZIP/TAR 文件" />
-        <button class="secondary-button" on:click={prepareUpdate} disabled={updateLoading || !updateBundleRoot.trim()}>{updateLoading ? '处理中…' : '预检离线包'}</button>
+        <button class="secondary-button" on:click={prepareUpdate} disabled={updateLoading || !updateBundleRoot.trim()}>{updateAction === 'offline' ? '处理中…' : '预检离线包'}</button>
         {#if updatePlan}
           <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span>{#if updateRestartAvailable}<button class="copy-confirm" on:click={() => activateUpdate(true)} disabled={updateLoading || updatePreflight?.blocked}>更新并重启</button><button class="secondary-button" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>稍后重启</button>{:else}<button class="copy-confirm" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button>{/if}</div>
         {/if}
         {#if updateStatus.state.previous_version}<button class="update-rollback" on:click={rollbackUpdate} disabled={updateLoading}>回滚到 {updateStatus.state.previous_version}</button>{/if}
-        <small class="copy-note">安装版在新版本启动成功后自动清理更新缓存；保留当前版本、上一可回滚版本、安装基线和待确认更新。</small>
+        <small class="copy-note">{updateStatus.state.cleanup_after ? `恢复窗口截至 ${formatTime(updateStatus.state.cleanup_after)}，随后自动清理旧包和旧版本。` : '不长期保留历史安装包。'}</small>
         {#if updateStatus.last_cleanup?.removed_items}<small class="copy-note">上次自动清理释放 {formatBytes(updateStatus.last_cleanup.freed_bytes)}。</small>{/if}
         {#if updateStatus.last_cleanup?.warnings?.length}<HelpBubble id="update-cleanup-warning" label="更新清理说明" text={updateStatus.last_cleanup.warnings.join('；')} />{/if}
         {#if updateMessage}<div class="update-message">{updateMessage}</div>{/if}

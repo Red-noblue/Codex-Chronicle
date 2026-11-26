@@ -69,6 +69,15 @@ func serve(address string, handler http.Handler, server *api.Server, lease *desk
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	serveError := make(chan error, 1)
 	go func() { serveError <- httpServer.Serve(listener) }()
+	updateCtx, cancelUpdate := context.WithCancel(context.Background())
+	updateDone := make(chan struct{})
+	go func() {
+		defer close(updateDone)
+		if lease != nil {
+			server.RunAutomaticUpdates(updateCtx, lease.StartupPaused)
+		}
+	}()
+	defer func() { cancelUpdate(); <-updateDone }()
 	signalCtx, cancelSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelSignal()
 	log.Printf("Codex Chronicle %s 正在监听 %s", version, listener.Addr())
@@ -82,6 +91,8 @@ func serve(address string, handler http.Handler, server *api.Server, lease *desk
 	case <-stop:
 	}
 	log.Print("正在等待已有数据任务完成；不会强杀任务")
+	cancelUpdate()
+	<-updateDone
 	if err := server.Drain(context.Background()); err != nil {
 		return err
 	}

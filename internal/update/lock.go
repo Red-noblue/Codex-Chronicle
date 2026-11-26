@@ -73,5 +73,5 @@ func (m *Manager) recoverDownloads(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return m.recoverPartialDownloads(ctx)
 }

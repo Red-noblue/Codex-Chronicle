@@ -69,6 +69,11 @@ func UpdatedLauncher(ctx context.Context, options LaunchOptions) (string, string
 		return "", "", err
 	}
 	options.DataDir = data
+	restartGuard, err := guardUpdateRestart(ctx, options)
+	if err != nil {
+		return "", "", err
+	}
+	defer restartGuard.Close()
 	_, markerErr := os.Lstat(filepath.Join(data, installMarker))
 	recoveringInstallation := runtime.GOOS == "darwin" && markerErr == nil
 	guard, err := guardInstallation(ctx, data)

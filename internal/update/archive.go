@@ -39,6 +39,78 @@ const (
 	archiveTarGZIP
 )
 
+// archiveExpandedBytes 在写入前估算完整展开体积，ZIP 和 TAR 共用现有资源上限。
+func archiveExpandedBytes(ctx context.Context, archivePath string, limits ExtractionLimits) (int64, error) {
+	source, err := safeArchiveFile(archivePath)
+	if err != nil {
+		return 0, err
+	}
+	format, err := detectArchiveFormat(source)
+	if err != nil {
+		return 0, err
+	}
+	limits = normalizeExtractionLimits(limits)
+	var total int64
+	count := 0
+	add := func(size uint64) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		count++
+		if count > limits.MaxFiles || size > uint64(limits.MaxFileBytes) || size > uint64(limits.MaxBytes-total) {
+			return errors.New("更新包展开体积或条目数超过限制")
+		}
+		total += int64(size)
+		return nil
+	}
+	if format == archiveZIP {
+		reader, err := zip.OpenReader(source)
+		if err != nil {
+			return 0, err
+		}
+		defer reader.Close()
+		for _, entry := range reader.File {
+			if err := add(entry.UncompressedSize64); err != nil {
+				return 0, err
+			}
+		}
+		return total, nil
+	}
+	file, err := os.Open(source)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	var input io.Reader = file
+	if format == archiveTarGZIP {
+		compressed, err := gzip.NewReader(file)
+		if err != nil {
+			return 0, err
+		}
+		defer compressed.Close()
+		input = compressed
+	}
+	reader := tar.NewReader(input)
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		header, err := reader.Next()
+		if err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		if header.Size < 0 {
+			return 0, errors.New("更新包文件大小无效")
+		}
+		if err := add(uint64(header.Size)); err != nil {
+			return 0, err
+		}
+	}
+}
+
 // ExtractArchive 将 ZIP/TAR/TAR.GZ 包解压到一个全新的目录。
 // destination 已存在、包含符号链接或解压中途失败时，函数不会覆盖原有目录。
 func ExtractArchive(ctx context.Context, archivePath, destination string, limits ExtractionLimits) error {

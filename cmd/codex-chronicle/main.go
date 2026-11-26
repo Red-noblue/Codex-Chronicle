@@ -485,6 +485,9 @@ func main() {
 			server.SetUpdateRestart(func(ctx context.Context, target string) error {
 				return desktop.ScheduleUpdateRestart(ctx, desktop.LaunchOptions{PackageRoot: desktop.PackageRoot(executable), DataDir: filepath.Dir(*desktopStateDir), UpdateFeedURL: *updateFeedURL, NoBrowser: *desktopNoBrowser}, desktopLease.Instance.ID, target)
 			})
+			server.SetAutomaticUpdateRestart(func(ctx context.Context, target string) error {
+				return desktop.ScheduleUpdateRestart(ctx, desktop.LaunchOptions{PackageRoot: desktop.PackageRoot(executable), DataDir: filepath.Dir(*desktopStateDir), UpdateFeedURL: *updateFeedURL, NoBrowser: *desktopNoBrowser, Background: true}, desktopLease.Instance.ID, target)
+			})
 		}
 		if err := manager.Recover(context.Background()); err != nil {
 			log.Fatalf("在线/离线更新中断恢复失败，未启动服务：%v", err)

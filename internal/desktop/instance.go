@@ -43,6 +43,8 @@ type Lease struct {
 
 func (l *Lease) SetStartupPaused(paused bool) { l.paused.Store(paused) }
 
+func (l *Lease) StartupPaused() bool { return l.paused.Load() }
+
 // PrepareDirectory 拒绝将运行数据放入 .codex，也不沿符号链接创建控制文件。
 func PrepareDirectory(path string) (string, error) {
 	abs, err := filepath.Abs(path)

@@ -116,7 +116,7 @@ func main() {
 	}
 	if *restartInstance != "" {
 		// 独立协作进程等待数据任务正常结束，不受原 HTTP 请求或旧后台退出影响。
-		if err := desktop.RestartAfterUpdate(context.Background(), desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version, UpdateFeedURL: updateFeedURL, NoBrowser: *noBrowser}, *restartInstance, *restartVersion); err != nil {
+		if err := desktop.RestartAfterUpdate(context.Background(), desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version, UpdateFeedURL: updateFeedURL, NoBrowser: *noBrowser, Background: *background}, *restartInstance, *restartVersion); err != nil {
 			fatal(err)
 		}
 		return
@@ -130,6 +130,16 @@ func main() {
 			log.Fatal("候选版本不一致，未开放操作")
 		}
 		if err := instance.Activate(ctx); err != nil {
+			log.Fatal(err)
+		}
+		active, err := desktop.Running(ctx, *dataDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := active.CheckHealth(ctx); err != nil {
+			log.Fatal(err)
+		}
+		if err := desktop.ConfirmUpdateLaunch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, UpdateFeedURL: updateFeedURL}, active); err != nil {
 			log.Fatal(err)
 		}
 		return

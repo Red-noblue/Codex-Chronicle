@@ -32,6 +32,7 @@ type LaunchOptions struct {
 	ScanRoot        string
 	StartupCheck    bool
 	NoBrowser       bool
+	Background      bool
 	ExpectedVersion string
 	UpdateFeedURL   string
 }
@@ -220,6 +221,11 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 		return Instance{}, err
 	}
 	if !options.StartupCheck {
+		restartGuard, err := guardUpdateRestart(ctx, options)
+		if err != nil {
+			return Instance{}, err
+		}
+		defer restartGuard.Close()
 		guard, err := guardInstallation(ctx, options.DataDir)
 		if err != nil {
 			return Instance{}, err
@@ -248,6 +254,28 @@ func Launch(ctx context.Context, options LaunchOptions) (Instance, error) {
 	options, err = resolveUpdatePackage(ctx, options)
 	if err != nil {
 		return Instance{}, err
+	}
+	if !options.StartupCheck {
+		if _, keyErr := os.Stat(filepath.Join(options.PackageRoot, "update", "trusted-public-key")); keyErr == nil {
+			manager, err := updateManager(options)
+			if err != nil {
+				return Instance{}, err
+			}
+			status, err := manager.Status(ctx)
+			if err != nil {
+				return Instance{}, err
+			}
+			if status.State.ConfirmedAt == nil && status.State.PreviousVersion != "" {
+				if err := trialUpdate(ctx, options, options.PackageRoot, status.State.PreviousVersion, status.State.ActiveVersion); err != nil {
+					return Instance{}, err
+				}
+				instance, err := Running(ctx, options.DataDir)
+				if err == nil {
+					err = instance.CheckHealth(ctx)
+				}
+				return instance, err
+			}
+		}
 	}
 	if options.AutoPort {
 		options.Address, options.AutoPort, err = StartupAddress(options.DataDir)

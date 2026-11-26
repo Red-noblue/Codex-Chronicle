@@ -41,11 +41,11 @@ func githubReleaseRepository(address string) string {
 
 func githubStableFeed(address string) bool {
 	parsed, err := url.Parse(address)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" {
+	if err != nil || parsed.Scheme != "https" {
 		return false
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	return len(parts) == 6 && strings.Join(parts[2:], "/") == "releases/latest/download/"+githubFeedName
+	return parsed.Host == "github.com" && len(parts) == 6 && strings.Join(parts[2:], "/") == "releases/latest/download/"+githubFeedName || parsed.Host == "raw.githubusercontent.com" && len(parts) == 4 && parts[2] == "update-feeds" && parts[3] == "stable.json"
 }
 
 func resolveGitHubPreviewFeed(ctx context.Context, client *http.Client, config OnlineConfig, repository, current string) (string, string, error) {

@@ -68,7 +68,7 @@ func (s *Server) updateStatusHandler(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"available": true, "read_only": true, "status": status, "running_version": s.version, "restart_available": s.updateRestart != nil, "restart_required": status.State.ActiveVersion != "" && status.State.ActiveVersion != s.version})
+	writeJSON(writer, http.StatusOK, map[string]any{"available": true, "read_only": true, "status": status, "running_version": s.version, "restart_available": s.updateRestart != nil, "automatic_available": s.updateAutomaticRestart != nil, "restart_required": status.State.ActiveVersion != "" && status.State.ActiveVersion != s.version})
 }
 
 // updateCheckHandler 只读取配置的在线 feed，不下载或切换版本。

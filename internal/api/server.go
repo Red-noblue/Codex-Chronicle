@@ -44,6 +44,8 @@ type Server struct {
 	drainMu                sync.Mutex
 	draining               bool
 	activeRequests         int
+	updateLastActivity     time.Time
+	updateAutomaticRestart func(context.Context, string) error
 	scanner                application.Scanner
 	root                   string
 	archive                *store.Store
@@ -282,6 +284,10 @@ func (s *Server) SetUpdatePackageCheck(check updatepkg.HealthCheck) {
 // SetUpdateRestart 仅由受桌面启动器管理的后台注入；手动运行的开发服务仍由部署者控制重启。
 func (s *Server) SetUpdateRestart(restart func(context.Context, string) error) {
 	s.updateRestart = restart
+}
+
+func (s *Server) SetAutomaticUpdateRestart(restart func(context.Context, string) error) {
+	s.updateAutomaticRestart = restart
 }
 
 // SetTrashSettingsStore 注入用户级回收站设置存储；应在 daemon 开始接受请求前调用。
@@ -647,6 +653,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/health/preflight", s.preflightHandler)
 	mux.HandleFunc("/api/v1/update/status", s.updateStatusHandler)
 	mux.HandleFunc("/api/v1/update/proxy", s.updateProxyHandler)
+	mux.HandleFunc("/api/v1/update/automatic", s.updateAutomaticHandler)
+	mux.HandleFunc("/api/v1/update/activity", s.updateActivityHandler)
 	mux.HandleFunc("/api/v1/update/check", s.updateCheckHandler)
 	mux.HandleFunc("/api/v1/update/download", s.updateDownloadHandler)
 	mux.HandleFunc("/api/v1/update/prepare-online", s.updatePrepareOnlineHandler)

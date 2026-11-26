@@ -1,4 +1,4 @@
-// 中文说明：仅在实际新版本通过启动健康检查后清理更新缓存，保留当前、回滚、安装基线和待确认计划；不触碰外部离线包。
+// 中文说明：实际新版本通过健康检查后保留 24 小时恢复窗口，到期再清理旧包和版本；不触碰外部离线包。
 package update
 
 import (
@@ -21,8 +21,14 @@ type CleanupResult struct {
 	CompletedAt    time.Time `json:"completed_at"`
 }
 
+const CleanupGracePeriod = 24 * time.Hour
+
 // ConfirmRunning 只由已核验实际进程的启动器调用；预检、版本切换和旧后台都不能触发清理。
 func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (CleanupResult, error) {
+	return m.confirmRunningAt(ctx, runningVersion, time.Now().UTC())
+}
+
+func (m *Manager) confirmRunningAt(ctx context.Context, runningVersion string, now time.Time) (CleanupResult, error) {
 	if m == nil {
 		return CleanupResult{}, errors.New("更新管理器未初始化")
 	}
@@ -51,8 +57,23 @@ func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (Cl
 	if err := m.VerifyVersionRoot(ctx, filepath.Join(m.root, VersionDir, safeVersionName(runningVersion))); err != nil {
 		return CleanupResult{}, err
 	}
+	if state.ConfirmedAt == nil {
+		deadline := now.Add(CleanupGracePeriod)
+		state.ConfirmedAt, state.CleanupAfter = &now, &deadline
+		if err := m.writeState(ctx, state); err != nil {
+			return CleanupResult{}, err
+		}
+	}
+	if state.CleanupAfter == nil || now.Before(*state.CleanupAfter) {
+		return CleanupResult{RunningVersion: runningVersion}, nil
+	}
+	// 先撤销回滚指针再删除旧载荷；保留安装标记，旧的系统入口仍可转交当前版本。
+	state.PreviousVersion = ""
+	if err := m.writeState(ctx, state); err != nil {
+		return CleanupResult{}, err
+	}
 	protected := map[string]bool{}
-	for _, version := range []string{state.ActiveVersion, state.PreviousVersion, state.InstalledVersion} {
+	for _, version := range []string{state.ActiveVersion} {
 		if version != "" {
 			protected[filepath.Join(m.root, VersionDir, safeVersionName(version))] = true
 		}
@@ -159,9 +180,15 @@ func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (Cl
 			result.FreedBytes += size
 		}
 	}
-	result.CompletedAt = time.Now().UTC()
+	result.CompletedAt = now
 	if err := writeAtomicJSON(ctx, filepath.Join(m.root, "last-cleanup.json"), result); err != nil {
 		return result, err
+	}
+	if len(result.Warnings) == 0 {
+		state.CleanupAfter = nil
+		if err := m.writeState(ctx, state); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
