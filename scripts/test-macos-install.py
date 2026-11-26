@@ -58,6 +58,8 @@ def main():
     try:
         run(["bash", old_app / "Contents/Resources/install-macos.sh", old_app, target, profile], env=environment)
         before = instance(target, profile)
+        initial_state = get_json(before["url"], "/api/v1/update/status")["status"]["state"]
+        assert initial_state["active_version"] == before["version"] and initial_state["installed_version"] == before["version"], "首次安装未自动建立版本基线"
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             database.execute("CREATE TABLE release_smoke_marker(value TEXT NOT NULL)")
             database.execute("INSERT INTO release_smoke_marker VALUES ('保留设置和数据')")
@@ -73,6 +75,8 @@ def main():
         assert after["version"] == expected_version and after["pid"] != before["pid"], "未切换到新版本"
         assert not after.get("startup_paused"), "安装后未开放操作"
         assert get_json(after["url"], "/api/v1/health/preflight")["status"] == "ready"
+        upgraded_state = get_json(after["url"], "/api/v1/update/status")["status"]["state"]
+        assert upgraded_state["active_version"] == expected_version and upgraded_state["installed_version"] == expected_version, "新应用仍被旧版本指针遮蔽"
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             assert database.execute("SELECT value FROM release_smoke_marker").fetchone()[0] == "保留设置和数据"
         assert (profile / "launcher.json").read_text(encoding="utf-8") == config
@@ -102,6 +106,7 @@ func main(){
         assert "已恢复旧应用" in failed.stdout + failed.stderr, failed.stdout + failed.stderr
         restored = instance(target, profile)
         assert restored["version"] == expected_version and not restored.get("startup_paused"), "旧后台未恢复"
+        assert get_json(restored["url"], "/api/v1/update/status")["status"]["state"] == upgraded_state, "安装失败未恢复原版本指针"
         assert (profile / "launcher.json").read_text(encoding="utf-8") == config, "失败候选覆盖了原设置"
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             assert database.execute("SELECT count(*) FROM release_smoke_marker").fetchone()[0] == 1

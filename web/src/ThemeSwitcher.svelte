@@ -1,9 +1,16 @@
 <!-- 中文说明：用单个可访问按钮切换亮暗色，悬停提示说明下一步操作。 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Moon, Sun } from '@lucide/svelte';
   import { setTheme, type Theme } from './theme';
 
   let theme: Theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+
+  onMount(() => {
+    const update = () => { theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'; };
+    window.addEventListener('chronicle-theme', update);
+    return () => window.removeEventListener('chronicle-theme', update);
+  });
 
   function chooseTheme(value: Theme) {
     theme = value;

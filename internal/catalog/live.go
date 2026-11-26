@@ -57,17 +57,41 @@ func ScanLiveJSONL(ctx context.Context, path string) (LiveJSONLSnapshot, error) 
 // ScanLiveJSONLContent 在活动 JSONL 的捕获前缀上执行 framing，并把已完成行交给回调。
 // 回调不会收到源文件捕获范围之外的数据；源文件追加、截断或替换只会体现在 State 中。
 func ScanLiveJSONLContent(ctx context.Context, path string, handler ContentFrameHandler) (LiveJSONLSnapshot, error) {
+	return scanLiveJSONLContent(ctx, path, nil, 0, handler)
+}
+
+// ScanLiveJSONLSuffix 从已复核的完整行边界续读，不与另一版本的文件拼接。
+// 回调中的位置和摘要以该段开头为基准。State.CapturedBytes 只统计本次读取，
+// 从非零位置续读时不会给出整文件摘要或将整文件标为完整。
+func ScanLiveJSONLSuffix(ctx context.Context, path string, expected os.FileInfo, offset int64, handler ContentFrameHandler) (LiveJSONLSnapshot, error) {
+	return scanLiveJSONLContent(ctx, path, expected, offset, handler)
+}
+
+func scanLiveJSONLContent(ctx context.Context, path string, expected os.FileInfo, offset int64, handler ContentFrameHandler) (LiveJSONLSnapshot, error) {
 	before, err := regularFileState(path)
 	if err != nil {
 		return LiveJSONLSnapshot{}, err
+	}
+	if offset < 0 || offset > before.size || expected != nil && !sameLiveVersion(expected, before.info) {
+		return LiveJSONLSnapshot{}, fmt.Errorf("搜索续读前源文件已变化，请重试")
 	}
 	input, err := os.Open(path)
 	if err != nil {
 		return LiveJSONLSnapshot{}, fmt.Errorf("打开活动 JSONL 失败：%w", err)
 	}
 	defer input.Close()
+	if expected != nil {
+		opened, err := input.Stat()
+		if err != nil || !sameLiveVersion(expected, opened) {
+			return LiveJSONLSnapshot{}, fmt.Errorf("搜索续读前源文件已变化，请重试")
+		}
+	}
 
-	reader := &contextReader{ctx: ctx, reader: io.LimitReader(input, before.size)}
+	var bounded io.Reader = io.LimitReader(input, before.size)
+	if offset != 0 {
+		bounded = io.NewSectionReader(input, offset, before.size-offset)
+	}
+	reader := &contextReader{ctx: ctx, reader: bounded}
 	summary, scanErr := ScanReaderContent(reader, handler)
 	captured := reader.bytes
 	prefixLimited := errors.Is(scanErr, ErrLimitReached)
@@ -78,14 +102,28 @@ func ScanLiveJSONLContent(ctx context.Context, path string, handler ContentFrame
 	if statErr != nil {
 		return LiveJSONLSnapshot{}, statErr
 	}
-	state := classifyLiveState(before, after, captured, summary.PendingLines > 0, summary.ContentSHA256)
-	if prefixLimited {
+	state := classifyLiveState(before, after, offset+captured, summary.PendingLines > 0, summary.ContentSHA256)
+	if prefixLimited && os.SameFile(before.info, after.info) && after.size >= before.size &&
+		(after.size > before.size || before.modTime.Equal(after.modTime)) {
 		state.Complete = false
-		state.Active = true
+		state.Active = after.size > before.size || state.PendingLine
 		state.Consistency = LivePrefixLimited
-		state.Diagnostics = append(state.Diagnostics, "搜索达到结果上限，只保留已读取前缀并继续标记为只读")
+		state.Diagnostics = []string{"搜索达到结果上限，只保留已读取前缀并继续标记为只读"}
+	}
+	if expected != nil && !sameLiveVersion(expected, after.info) {
+		state.Consistency = LiveRewriteConflict
+		state.Complete = false
+	}
+	if offset > 0 {
+		state.CapturedBytes = captured
+		state.Complete = false
+		state.SHA256 = ""
 	}
 	return LiveJSONLSnapshot{State: state, Summary: summary}, nil
+}
+
+func sameLiveVersion(expected, actual os.FileInfo) bool {
+	return os.SameFile(expected, actual) && expected.Size() == actual.Size() && expected.ModTime().Equal(actual.ModTime())
 }
 
 // CaptureLiveFile 读取普通文件的捕获前缀，用于活动副本的非 JSONL 资产。

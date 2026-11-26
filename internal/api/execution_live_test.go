@@ -7,11 +7,60 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"codex-chronicle.local/internal/application"
+	"codex-chronicle.local/internal/compat"
+	"codex-chronicle.local/internal/compat/authorizedlive"
+	"codex-chronicle.local/internal/domain"
 	"codex-chronicle.local/internal/lifecycle"
 )
+
+func TestForkIdentityAndStaleSelectionsCannotAuthorizeAnotherThread(t *testing.T) {
+	server, _ := executionFixture(t, 0)
+	server.lifecycle.FixtureOnly = false
+	server.lifecycle.AuthorizedLive = &authorizedlive.Config{AllConversations: true}
+	current, ancestor := authorizedlive.AllowedIDs()[0], authorizedlive.AllowedIDs()[1]
+	currentID, ancestorID := compat.StableConversationID(current), compat.StableConversationID(ancestor)
+	path := filepath.Join(server.root, "fork.jsonl")
+	body := fmt.Sprintf("{\"type\":\"session_meta\",\"payload\":{\"id\":%q,\"forked_from_id\":%q}}\n{\"type\":\"session_meta\",\"payload\":{\"id\":%q}}\n", current, ancestor, ancestor)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	response := apiJSON(t, handler, http.MethodGet, "/api/v1/conversations", "")
+	var list struct {
+		Items []domain.ConversationSummary `json:"items"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &list) != nil || len(list.Items) != 1 || list.Items[0].SourceID != current || list.Items[0].ID != currentID {
+		t.Fatalf("会话列表没有使用 fork 自身的身份: %s", response.Body.String())
+	}
+	// 旧选择和混合批次必须整体拒绝，不能按相同内容或 fork 来源改成另一个目标。
+	for _, ids := range [][]string{{ancestorID}, {currentID, ancestorID}} {
+		response := executionJSON(t, handler, "/api/v1/operations/batch/preview", batchOperationRequest{ConversationIDs: ids, Trash: true})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "已不存在") {
+			t.Fatalf("失效选择未在执行器之前阻断: %d %s", response.Code, response.Body.String())
+		}
+		if data, err := os.ReadFile(path); err != nil || string(data) != body {
+			t.Fatal("失效预览修改了 fork 正文")
+		}
+	}
+	// 列表载入之后源文件消失，也不能继续使用列表缓存生成执行凭据。
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	response = executionJSON(t, handler, "/api/v1/operations/preview", operationPreviewRequest{ConversationID: currentID, Trash: true})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "已不存在") {
+		t.Fatalf("扫描后消失的目标仍可生成预览: %d %s", response.Code, response.Body.String())
+	}
+	if len(server.executionReviews) != 0 {
+		t.Fatal("失效选择创建了可执行凭据")
+	}
+	if _, err := os.Stat(server.lifecycle.JournalRoot); !os.IsNotExist(err) {
+		t.Fatalf("失效选择创建了恢复材料: %v", err)
+	}
+}
 
 func TestUnchangedLiveProgressDoesNotRewriteTaskOrMissStop(t *testing.T) {
 	server, _ := executionFixture(t, 1)

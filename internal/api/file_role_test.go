@@ -55,6 +55,9 @@ func TestConversationAPIsExcludeSupportFilesEvenWithLegacySearchIndex(t *testing
 	if _, err := archive.SyncInventory(t.Context(), report); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := archive.BuildSearchIndex(t.Context(), report, nil); err != nil {
+		t.Fatal(err)
+	}
 	legacy, err := archive.Search(t.Context(), root, "roleboundaryneedle", 500)
 	if err != nil || len(legacy) != 500 {
 		t.Fatalf("未模拟出超出候选上限的旧索引污染: hits=%d err=%v", len(legacy), err)

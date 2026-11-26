@@ -60,6 +60,9 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := StopBackend();
-  if not Result then
+  if Result then
+    { 卸载仅清理本应用的当前用户登录启动项；覆盖安装保留用户选择。 }
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'CodexChronicle')
+  else
     MsgBox('后台任务尚未完成，请等待任务结束后重试卸载。', mbError, MB_OK);
 end;

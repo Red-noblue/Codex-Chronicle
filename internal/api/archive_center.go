@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,44 +49,14 @@ func cloudTaskRemoteCopy(task cloudTask) bool {
 
 func (s *Server) archiveCenterHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	suffix := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/archive-center"), "/")
+	if suffix == "" && r.Method == http.MethodGet {
+		s.archiveCenterList(w, r)
+		return
+	}
 	state, err := s.cloudBackups()
 	if err != nil {
 		writeError(w, 409, err.Error())
-		return
-	}
-	suffix := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/archive-center"), "/")
-	if suffix == "" && r.Method == "GET" {
-		state.mu.Lock()
-		tasks := []cloudTask{}
-		for _, task := range state.tasks {
-			if task.SourceRoot == s.currentRoot() {
-				tasks = append(tasks, task)
-			}
-		}
-		active := state.active
-		state.mu.Unlock()
-		sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
-		items := []map[string]any{}
-		for _, task := range tasks {
-			local := false
-			if task.LocalPath != "" && filepath.Dir(task.LocalPath) == filepath.Clean(s.lifecycle.ArchiveRoot) {
-				info, err := os.Lstat(filepath.Join(task.LocalPath, "manifest.json"))
-				local = err == nil && info.Mode().IsRegular()
-			}
-			remote := cloudTaskRemoteCopy(task) && task.State == "completed"
-			if task.State == "completed" && task.ManagementState == "completed" &&
-				(strings.HasPrefix(task.ManagementAction, "delete_") || strings.HasPrefix(task.ManagementAction, "move_")) &&
-				!local && !remote {
-				continue
-			}
-			items = append(items, map[string]any{"task": task, "local_available": local, "remote_available": remote})
-		}
-		target, _, targetErr := s.cloudTarget(r.Context())
-		message := ""
-		if targetErr != nil {
-			message = targetErr.Error()
-		}
-		writeJSON(w, 200, map[string]any{"items": items, "active": active, "local_root": s.lifecycle.ArchiveRoot, "remote_target": target, "remote_error": message})
 		return
 	}
 	parts := strings.Split(suffix, "/")
@@ -161,15 +132,28 @@ func (s *Server) archiveCenterHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "已有会话操作正在执行，请稍后重新查看影响")
 		return
 	}
+	release := func() {}
+	if review.Action == "restore" {
+		var err error
+		release, err = s.beginSourceChanges(task.SourceRoot)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
 	task.ManagementAction, task.ManagementState, task.ManagementError = review.Action, "running", ""
 	if err := state.save(task); err != nil {
+		release()
 		writeError(w, 500, err.Error())
 		return
 	}
 	state.tasks[task.ID], state.active = task, task.ID
 	ctx, cancel := context.WithCancel(context.Background())
 	state.cancel, state.done = cancel, make(chan struct{})
-	go func() {
+	go func(task cloudTask) {
+		defer release()
+		// 后台任务持有独立副本，避免回包序列化和列表读取与状态写入竞争。
+		task.RestoreChecks = maps.Clone(task.RestoreChecks)
 		defer func() {
 			cancel()
 			state.mu.Lock()
@@ -190,7 +174,7 @@ func (s *Server) archiveCenterHandler(w http.ResponseWriter, r *http.Request) {
 			state.tasks[task.ID] = task
 			state.mu.Unlock()
 		}
-	}()
+	}(task)
 	writeJSON(w, 202, task)
 }
 
@@ -325,6 +309,9 @@ func (s *Server) previewArchiveManagement(ctx context.Context, state *cloudBacku
 	}
 	if action != "restore" {
 		return review, nil
+	}
+	if err := s.requireSourceChanges(task.SourceRoot); err != nil {
+		return review, err
 	}
 	if !s.executionAllowed(task.SourceRoot) {
 		return review, fmt.Errorf("当前工作区未开放精确行恢复")

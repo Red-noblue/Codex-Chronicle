@@ -6,7 +6,7 @@ import ts from 'typescript';
 
 const source = await readFile(new URL('../src/sessions/impact.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
-const { summarizeImpact, impactBlockerMessage } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const { summarizeImpact, impactBlockerMessage, impactNeedsRefresh } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 
 const rollout = { relative_path: 'sessions/target.jsonl', size_bytes: 12888647, kind: 'rollout_jsonl', owners: 1 };
 const shared = [
@@ -64,4 +64,20 @@ test('阻断原因使用可行动的文字，未识别原因保留原文', () =>
   assert.match(impactBlockerMessage('未知 schema: state_5.sqlite'), /数据格式尚未支持/);
   assert.match(impactBlockerMessage('附件归属尚未实现，停止'), /附件或会话关联/);
   assert.equal(impactBlockerMessage('该目标未获授权'), '该目标未获授权');
+});
+
+test('缺失线程和 fork 身份不一致提示重新选择，不被误报为备份故障', () => {
+  for (const error of [
+    '目标线程已不存在，请刷新会话库；没有创建恢复包',
+    '所选 ID 在会话数据库中不存在: old-id。会话库可能已过期或身份识别不一致，请刷新后重新选择；已在备份和写入前停止。',
+    '目标或子代理已不存在，请重新扫描会话库',
+    '未找到指定对话',
+    'rollout 元数据身份不匹配'
+  ]) {
+    assert.equal(impactNeedsRefresh(error), true);
+    assert.match(impactBlockerMessage(error), /刷新会话库后重新选择/);
+    assert.doesNotMatch(impactBlockerMessage(error), /恢复材料未通过/);
+  }
+  assert.equal(impactNeedsRefresh('恢复材料损坏'), false);
+  assert.equal(impactNeedsRefresh('SQLite busy'), false);
 });

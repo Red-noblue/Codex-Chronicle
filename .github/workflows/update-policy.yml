@@ -1,0 +1,65 @@
+# 中文说明：人工暂停、恢复在线更新或撤回问题版本，只修改静态通道策略，不覆盖已发布安装包。
+name: 维护更新策略
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 需要维护的更新通道
+        required: true
+        type: choice
+        options: [preview, stable]
+      action:
+        description: 暂停、恢复通道，或撤回指定版本
+        required: true
+        type: choice
+        options: [pause, resume, withdraw]
+      target_version:
+        description: 仅撤回时填写版本号，不带 v
+        required: false
+        type: string
+      reason:
+        description: 暂停或撤回的原因，将展示给用户
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  policy:
+    name: 修改更新通道策略
+    runs-on: ubuntu-latest
+    concurrency:
+      group: chronicle-update-feeds
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHRONICLE_CHANNEL: ${{ inputs.channel }}
+      CHRONICLE_POLICY_ACTION: ${{ inputs.action }}
+      CHRONICLE_TARGET_VERSION: ${{ inputs.target_version }}
+      CHRONICLE_POLICY_REASON: ${{ inputs.reason }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: 校验策略并原子提交
+        shell: bash
+        run: |
+          [[ "$CHRONICLE_CHANNEL" == preview || "$CHRONICLE_CHANNEL" == stable ]] || exit 1
+          chronicle_policy="$(mktemp -d)"
+          trap 'rm -rf -- "$chronicle_policy"' EXIT
+          git -C "$chronicle_policy" init -q -b update-feeds
+          git -C "$chronicle_policy" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$chronicle_policy" fetch -q --depth=1 origin refs/heads/update-feeds
+          git -C "$chronicle_policy" checkout -q -B update-feeds FETCH_HEAD
+          chronicle_feed="$chronicle_policy/$CHRONICLE_CHANNEL.json"
+          chronicle_version="$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1])); print((f.get("releases") or f["held_releases"])[0]["version"])' "$chronicle_feed")"
+          python3 scripts/release-feed.py set-policy "$chronicle_version" --repository "$GITHUB_REPOSITORY" --feed-json "$chronicle_feed" --action "$CHRONICLE_POLICY_ACTION" --target-version "$CHRONICLE_TARGET_VERSION" --reason "$CHRONICLE_POLICY_REASON"
+          git -C "$chronicle_policy" add -- "$CHRONICLE_CHANNEL.json"
+          if git -C "$chronicle_policy" diff --cached --quiet; then
+            echo '更新策略未变化'
+            exit 0
+          fi
+          git -C "$chronicle_policy" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "调整 $CHRONICLE_CHANNEL 更新策略：$CHRONICLE_POLICY_ACTION"
+          git -C "$chronicle_policy" -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD:refs/heads/update-feeds

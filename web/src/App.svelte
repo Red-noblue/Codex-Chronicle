@@ -2,10 +2,16 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Copy, Database, ExternalLink, FolderOpen, KeyRound, Inbox, ListFilter, LoaderCircle, MessagesSquare, PanelLeft, RefreshCw, Search, ShieldCheck, TriangleAlert, X } from '@lucide/svelte';
+  import HelpBubble from './HelpBubble.svelte';
+  import CompatibilitySettings from './settings/CompatibilitySettings.svelte';
   import ThemeSwitcher from './ThemeSwitcher.svelte';
+  import { initializePreferences, readPreference, savePreference } from './preferences';
+  import { initializeTheme } from './theme';
   import NavigationIcon from './NavigationIcon.svelte';
   import SettingsPage from './settings/SettingsPage.svelte';
   import SettingsPanel from './settings/SettingsPanel.svelte';
+  import SearchIndexSettings from './settings/SearchIndexSettings.svelte';
+  import type { IndexContentNode } from './settings/IndexContentTree.svelte';
   import GitHubConnection from './settings/GitHubConnection.svelte';
   import DensityControl from './settings/DensityControl.svelte';
   import CodexDiscovery, { type CodexHomeCandidate } from './settings/CodexDiscovery.svelte';
@@ -20,17 +26,18 @@
   import ArchiveImpact from './archives/ArchiveImpact.svelte';
   import type { ArchivePreview } from './archives/types';
   import ConversationReader from './sessions/ConversationReader.svelte';
+  import SearchScopeControl from './sessions/SearchScopeControl.svelte';
   import { readerLocationFromURL, type ReaderEvent, type ReaderLocation } from './sessions/reader-state';
   import OperationChoices from './sessions/OperationChoices.svelte';
   import OperationWorkflow from './sessions/OperationWorkflow.svelte';
   import OperationImpact from './sessions/OperationImpact.svelte';
-  import { impactBlockerMessage, type RestrictedImpact } from './sessions/impact';
+  import { impactBlockerMessage, impactNeedsRefresh, type RestrictedImpact } from './sessions/impact';
   import DestinationConfirmation from './sessions/DestinationConfirmation.svelte';
   import ExecutionConfirmationDialog from './sessions/ExecutionConfirmation.svelte';
   import ExecutionProgress from './sessions/ExecutionProgress.svelte';
   import { executionResultLabel, type ExecutionConfirmation, type ExecutionTask } from './sessions/execution';
   import { archiveLocationMissing, destinationsReady, type OperationDestinations } from './sessions/destinations';
-  import { emptySessionFilters, parseSessionView, sessionViewSearch, type FilterSnapshot } from './sessions/view-state';
+  import { emptySessionFilters, parseSearchScope, parseSessionView, sessionViewSearch, type FilterSnapshot, type SearchScope } from './sessions/view-state';
   import { completedRemovalIDs, readConversationSelection, writeConversationSelection } from './sessions/selection';
   import { projectFamilies, reviewFamilyItems } from './sessions/families';
 
@@ -156,6 +163,20 @@
     current?: WorkspaceDefinition;
     workspaces: WorkspaceDefinition[];
   };
+  type SearchIndexCoverage = {
+    available: boolean;
+    root?: string;
+    index?: {
+      settings: { content?: string[]; recent_context?: boolean };
+      rebuild_required?: boolean;
+      documents: number;
+      indexed_files: number;
+      partial_files?: number;
+      catalog_files: number;
+    };
+    content_tree?: IndexContentNode[];
+  };
+  type SearchMatchOrigin = 'index' | 'source';
   type SearchHit = {
     conversation_id?: string;
     relative_path: string;
@@ -164,11 +185,17 @@
     end: number;
     snippet: string;
     top_type: string;
+    match_origin?: SearchMatchOrigin;
     source_status?: AssetStatus;
     activity_status?: AssetStatus;
     live_consistency?: string;
     read_only: boolean;
   };
+  type SearchStreamEvent =
+    | { type: 'catalog'; files_seen?: number }
+    | { type: 'search'; stage?: SearchMatchOrigin; files_done?: number; files_total?: number; snapshot_generated_at?: string; hits?: SearchHit[]; items?: ConversationSummary[] }
+    | { type: 'done'; candidate_limit_reached?: boolean }
+    | { type: 'error'; error: string };
   type ActivityEvidence = {
     probed_at: string;
     interval_ms: number;
@@ -376,6 +403,8 @@
       previous_version?: string;
       last_status?: string;
       last_error?: string;
+      confirmed_at?: string;
+      cleanup_after?: string;
       updated_at?: string;
     };
     versions: string[];
@@ -387,6 +416,10 @@
     trusted_key_count: number;
     online_configured: boolean;
     online_feed_url?: string;
+    online_proxy_url?: string;
+    last_cleanup?: { running_version: string; removed_items: number; freed_bytes: number; warnings?: string[]; completed_at: string };
+    automatic?: { enabled: boolean; phase: string; plan_id?: string; target_version?: string; last_error?: string; last_checked_at?: string; next_check_at?: string };
+    download?: { version: string; received_bytes: number; total_bytes: number; resumed: boolean };
   };
   type OnlineRelease = {
     version: string;
@@ -404,6 +437,8 @@
     available: boolean;
     release?: OnlineRelease;
     checked_at: string;
+    updates_paused?: boolean;
+    pause_reason?: string;
   };
   type UpdatePreflight = {
     status: string;
@@ -751,6 +786,8 @@
   let homeTrendPoints: HomeTrendPoint[] = [];
   let homeTrendPeak = 1;
   let lifecycleWritesEnabled = false;
+  let sourcePolicy: 'automatic' | 'readonly' = 'automatic';
+  let compatibilityHelp = 'Codex 更新后会自动尝试读取会话。只读保护可阻止本项目修改原始记录。';
   let lifecycleFixtureOnly = false;
   let authConfigured = false;
   let authRequired = false;
@@ -820,7 +857,7 @@
   let summaryExpanded = false;
   let compactPane: CompactPane = 'sessions';
   let density: Density = 'comfortable';
-  let densityStorageError = false;
+  let preferencesStorageError = false;
   let settingsCategory: SettingsCategory = 'appearance';
   let routeConversationID = '';
   let routeConversationLoading = false;
@@ -838,6 +875,7 @@
   let previewLength = 0;
   let search = '';
   let searchDraft = '';
+  let searchScope: SearchScope = '';
   let searchRequestToken = 0;
   let searchExecutedQuery = '';
   let statusFilter = '全部状态';
@@ -862,12 +900,24 @@
   let savedFilterName = '';
   let savedFilterStore: Record<string, SavedFilter[]> = {};
   let savedFilters: SavedFilter[] = [];
-  let loading = false;
+  // 首屏从认证和工作区初始化起保持加载态，避免将尚未读取的会话误报为空。
+  let loading = true;
   let errorMessage = '';
   let preview = '';
   let searchHits: SearchHit[] = [];
+  let searchItems: ConversationSummary[] = [];
   let searchLimited = false;
   let searching = false;
+  let searchController: AbortController | null = null;
+  let searchProgressText = '';
+  let searchFilesDone = 0;
+  let searchFilesTotal = 0;
+  let searchStage: SearchMatchOrigin | undefined;
+  let searchMessage = '';
+  let searchCompleted = false;
+  let searchSnapshotAt = '';
+  let searchCoverage = { root: '', text: '' };
+  let searchCoverageRequest: { root: string } | null = null;
   let impactPreview: ImpactPreview | null = null;
   let previewLoading = false;
   let impactPreviewRequestToken = 0;
@@ -933,11 +983,20 @@
   let summaryBatchLoading = false;
   let summaryPollToken = 0;
   let updateStatus: UpdateStatus | null = null;
+  let updateRunningVersion = '';
+  let updateRestartAvailable = false;
+  let updateAutomaticAvailable = false;
+  let updateRestartRequired = false;
   let updatePreflight: UpdatePreflight | null = null;
   let onlineUpdate: OnlineCheck | null = null;
+  let updateProxyURL = '';
+  let updateProxyScheme = 'http';
+  let updateProxyAddress = '127.0.0.1:7890';
   let updatePlan: UpdatePlan | null = null;
   let updateBundleRoot = '';
   let updateLoading = false;
+  let updateAction: 'check' | 'proxy' | 'download' | 'offline' | '' = '';
+  let updateStatusPolling = false;
   let updateMessage = '';
   let projectRelation: ProjectRelationReport | null = null;
   let projectLoading = false;
@@ -1130,17 +1189,19 @@
     counts[status.name] = status.count;
     return counts;
   }, {});
-  $: searchConversationIDs = new Set(searchHits.map((hit) => hit.conversation_id).filter(Boolean));
-  $: searchConversationPaths = new Set(searchHits.map((hit) => hit.relative_path).filter(Boolean));
-  $: searchIsApplied = Boolean(searchExecutedQuery && searchExecutedQuery === search.trim() && !searching);
-  $: filteredConversations = searchIsApplied ? conversations.filter((conversation) => conversationHasSearchHit(conversation)) : conversations;
-  $: displayedConversations = projectFamilies(conversations, expandedFamilyIDs, searchIsApplied ? new Set(filteredConversations.map(item => item.id)) : undefined);
+  $: searchConversationIDs = new Set(searchHits.flatMap(({ conversation_id }) => conversation_id ? [conversation_id] : []));
+  $: searchOriginsByConversation = summarizeSearchOrigins(searchHits);
+  $: selectedSearchHits = selectedConversation ? searchHits.filter(hit => hit.conversation_id === selectedConversation?.id) : [];
+  $: searchIsApplied = Boolean(searchExecutedQuery && searchExecutedQuery === search.trim());
+  $: filteredConversations = searchIsApplied ? searchItems.filter(item => searchConversationIDs.has(item.id)) : conversations;
+  $: displayedConversations = projectFamilies(filteredConversations, expandedFamilyIDs, searchIsApplied ? searchConversationIDs : undefined);
   $: visibleStart = Math.max(0, Math.floor(listScrollTop / conversationRowHeight) - 5);
   $: visibleEnd = Math.min(displayedConversations.length, visibleStart + Math.ceil(listViewportHeight / conversationRowHeight) + 10);
   $: visibleConversations = displayedConversations.slice(visibleStart, visibleEnd);
   $: activeConversationFilterCount = activeFilterLabels.length;
   $: selectedConversationCount = selectedConversationIDs.size;
-  $: selectedConversationTokenTotal = conversations.reduce((total, conversation) => selectedConversationIDs.has(conversation.id) ? total + conversation.token_usage.total_tokens : total, 0);
+  $: knownConversations = new Map([...searchItems, ...conversations].map(item => [item.id, item]));
+  $: selectedConversationTokenTotal = [...selectedConversationIDs].reduce((total, id) => total + (knownConversations.get(id)?.token_usage.total_tokens ?? 0), 0);
   $: allLoadedConversationsSelected = filteredConversations.length > 0 && filteredConversations.every((conversation) => selectedConversationIDs.has(conversation.id));
   $: pendingSelectedOperation = pendingOperations.find((operation) => operation.operation_id === pendingSelectedID);
   $: if (!pendingDrawerOpen) {
@@ -1171,12 +1232,26 @@
     { key: 'tokens', label: 'tokens', value: minTokensFilter || maxTokensFilter ? `${minTokensFilter || '不限'} – ${maxTokensFilter || '不限'}` : '' },
     { key: 'bytes', label: '字节', value: minBytesFilter || maxBytesFilter ? `${minBytesFilter || '不限'} – ${maxBytesFilter || '不限'}` : '' }
   ].filter((item) => item.value) as typeof activeFilterLabels;
-  $: searchHasNoResults = Boolean(searchExecutedQuery && searchExecutedQuery === search.trim() && !searching && searchHits.length === 0);
-  $: searchHasNoVisibleResults = Boolean(searchIsApplied && searchHits.length > 0 && displayedConversations.length === 0);
+  $: searchHasNoResults = searchIsApplied && searchCompleted && searchHits.length === 0;
+  $: searchCoverageText = searchCoverage.root === currentWorkspace?.root ? searchCoverage.text : '';
+  $: searchHeaderHelp = ['输入关键词后按 Enter 搜索。⌘K 或 Ctrl+K 聚焦搜索框。', searchCoverageText].filter(Boolean).join('\n\n');
+  $: searchResultsHelp = [searchCoverageText, searchLimited ? '已达到显示上限。可增加筛选条件，或在打开会话后继续搜索。' : ''].filter(Boolean).join('\n\n');
+
+  const searchOriginLabels = { index: '索引命中', source: '原文命中', mixed: '索引 + 原文' };
+
+  function summarizeSearchOrigins(hits: SearchHit[]) {
+    const origins = new Map<string, SearchMatchOrigin | 'mixed'>();
+    for (const hit of hits) {
+      if (!hit.conversation_id || !hit.match_origin) continue;
+      const previous = origins.get(hit.conversation_id);
+      origins.set(hit.conversation_id, previous && previous !== hit.match_origin ? 'mixed' : hit.match_origin);
+    }
+    return origins;
+  }
   $: operationChosen = operationOptions.archive || operationOptions.trash || operationOptions.permanent_delete;
   $: operationSelectionError = archiveLocationMissing(operationOptions) ? '归档至少选择一个保存位置' : '';
-  $: operationExecutable = Boolean(lifecycleWritesEnabled && !executionTasks.some(task => task.state === 'running') && impactPreview?.preview_id && !previewLoading && impactPreview?.plan?.status === 'prepared' && !impactPreview.blocked && (!operationOptions.encrypted || operationArchivePassword.trim()));
-  $: batchOperationExecutable = Boolean(lifecycleWritesEnabled && !executionTasks.some(task => task.state === 'running') && batchOperationPreview?.preview_id && batchOperationPreview && !batchOperationPreview.blocked && batchOperationPreview.items.length && batchOperationPreview.items.every((item) => !item.blocked && !item.completed && !item.result && item.plan?.status === 'prepared') && (!operationOptions.encrypted || operationArchivePassword.trim()));
+  $: operationExecutable = Boolean(lifecycleWritesEnabled && (sourcePolicy !== 'readonly' || (!operationOptions.trash && !operationOptions.permanent_delete)) && !executionTasks.some(task => task.state === 'running') && impactPreview?.preview_id && !previewLoading && impactPreview?.plan?.status === 'prepared' && !impactPreview.blocked && (!operationOptions.encrypted || operationArchivePassword.trim()));
+  $: batchOperationExecutable = Boolean(lifecycleWritesEnabled && (sourcePolicy !== 'readonly' || (!operationOptions.trash && !operationOptions.permanent_delete)) && !executionTasks.some(task => task.state === 'running') && batchOperationPreview?.preview_id && batchOperationPreview && !batchOperationPreview.blocked && batchOperationPreview.items.length && batchOperationPreview.items.every((item) => !item.blocked && !item.completed && !item.result && item.plan?.status === 'prepared') && (!operationOptions.encrypted || operationArchivePassword.trim()));
   $: batchSharedError = batchOperationPreview?.items.length && batchOperationPreview.items.every(item => item.blocked && item.error === batchOperationPreview?.items[0].error) ? batchOperationPreview.items[0].error || '' : '';
   // 隐藏面板会测到零高度，保留上一次有效行高，避免虚拟列表出现除零和空白。
   $: if (measuredConversationRowHeight > 0) conversationRowHeight = measuredConversationRowHeight;
@@ -1185,13 +1260,29 @@
     applyBrowserRoute();
     loadSavedFilterStore();
     loadDensity();
+    const handlePreferencesError = () => { preferencesStorageError = true; };
+    window.addEventListener('chronicle-preferences-error', handlePreferencesError);
     void startApplicationWhenAuthorized();
     const handlePopstate = () => applyBrowserRoute();
     const handleFocus = () => {
       if (applicationStarted && inventoryReady) void loadExecutionTasks();
       if (applicationStarted && activeWorkspace === 'settings' && settingsCategory === 'remote') void loadGitHubStatus();
     };
-    const handleVisibility = () => { if (document.visibilityState === 'visible') handleFocus(); };
+    const reportUpdateActivity = () => {
+      if (applicationStarted && document.visibilityState === 'visible') {
+        void apiFetch('/api/v1/update/activity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(async (response) => {
+          if (!response.ok) return;
+          const body = await response.json() as { running_version?: string };
+          if (updateRunningVersion && body.running_version && body.running_version !== updateRunningVersion) window.location.reload();
+        }).catch(() => {});
+        if (activeWorkspace === 'settings' && updateStatus) void refreshAutomaticUpdateStatus();
+      }
+    };
+    const updateActivityTimer = window.setInterval(reportUpdateActivity, 30_000);
+    const updateProgressTimer = window.setInterval(() => {
+      if (applicationStarted && document.visibilityState === 'visible' && activeWorkspace === 'settings' && updateStatus && (updateLoading || updateStatus.automatic?.phase === 'downloading')) void refreshAutomaticUpdateStatus();
+    }, 2_000);
+    const handleVisibility = () => { if (document.visibilityState === 'visible') { handleFocus(); reportUpdateActivity(); } };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
       if (document.querySelector('dialog[open]')) return;
       if (isEditableTarget(event.target)) {
@@ -1230,8 +1321,12 @@
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
+      window.removeEventListener('chronicle-preferences-error', handlePreferencesError);
+      searchController?.abort();
       if (githubPollTimer) clearTimeout(githubPollTimer);
       if (executionPollTimer) clearTimeout(executionPollTimer);
+      window.clearInterval(updateActivityTimer);
+      window.clearInterval(updateProgressTimer);
       window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener('popstate', handlePopstate);
       window.removeEventListener('focus', handleFocus);
@@ -1335,7 +1430,7 @@
 
   function loadDensity() {
     try {
-      const stored = window.localStorage.getItem('codex-chronicle.density.v1');
+      const stored = readPreference('codex-chronicle.density.v1');
       if (stored === 'comfortable' || stored === 'compact' || stored === 'reading') density = stored;
     } catch {
       density = 'comfortable';
@@ -1344,13 +1439,7 @@
 
   function setDensity(value: Density) {
     density = value;
-    densityStorageError = false;
-    try {
-      window.localStorage.setItem('codex-chronicle.density.v1', value);
-    } catch {
-      densityStorageError = true;
-      // 本地存储不可用时仍保留当前页面的显示密度。
-    }
+    void savePreference('codex-chronicle.density.v1', value);
   }
 
   function isEditableTarget(target: EventTarget | null) {
@@ -1386,6 +1475,7 @@
   function applyFilterSnapshot(filters: FilterSnapshot) {
     search = filters.search;
     searchDraft = filters.search;
+    searchScope = filters.search ? parseSearchScope(filters.searchScope) : '';
     statusFilter = filters.status;
     conversationQuery = filters.query;
     cwdFilter = filters.cwd;
@@ -1401,16 +1491,35 @@
     diagnosticsFilter = filters.diagnostics;
   }
 
-  async function reloadSessionResults() {
-    errorMessage = '';
+  function stopSearch() {
     searchRequestToken += 1;
+    searchController?.abort();
+    searchController = null;
     searching = false;
+  }
+
+  function resetSearchResults() {
+    stopSearch();
     searchHits = [];
+    searchItems = [];
     searchLimited = false;
     searchExecutedQuery = '';
-    const snapshot = JSON.stringify(currentFilterSnapshot());
-    await loadConversations(true);
-    if (snapshot === JSON.stringify(currentFilterSnapshot()) && search.trim()) await runSearch(true, false);
+    searchProgressText = '';
+    searchFilesDone = 0;
+    searchFilesTotal = 0;
+    searchStage = undefined;
+    searchMessage = '';
+    searchCompleted = false;
+    searchSnapshotAt = '';
+  }
+
+  async function reloadSessionResults() {
+    errorMessage = '';
+    if (search.trim()) await runSearch(false);
+    else {
+      resetSearchResults();
+      await loadConversations(true);
+    }
   }
 
   async function removeSessionFilter(key: typeof activeFilterLabels[number]['key']) {
@@ -1424,10 +1533,6 @@
     applyFilterSnapshot(filters);
     navigateToRoute({ page: 'sessions' });
     await reloadSessionResults();
-  }
-
-  function conversationHasSearchHit(conversation: ConversationSummary) {
-    return searchConversationIDs.has(conversation.id) || conversation.rollout_paths.some((path) => searchConversationPaths.has(path));
   }
 
   function formatPath(value?: string, keep = 2) {
@@ -1472,7 +1577,7 @@
 
   function loadSavedFilterStore() {
     try {
-      const raw = window.localStorage.getItem('codex-chronicle.saved-filters.v1');
+      const raw = readPreference('codex-chronicle.saved-filters.v1');
       if (!raw) return;
       const parsed = JSON.parse(raw) as Record<string, SavedFilter[]>;
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
@@ -1486,16 +1591,13 @@
   }
 
   function persistSavedFilterStore() {
-    try {
-      window.localStorage.setItem('codex-chronicle.saved-filters.v1', JSON.stringify(savedFilterStore));
-    } catch {
-      // 浏览器存储不可用时，筛选仍保留在当前页面内。
-    }
+    void savePreference('codex-chronicle.saved-filters.v1', JSON.stringify(savedFilterStore));
   }
 
   function currentFilterSnapshot(): FilterSnapshot {
     return {
       search,
+      searchScope: search.trim() ? searchScope : '',
       status: statusFilter,
       query: conversationQuery,
       cwd: cwdFilter,
@@ -1580,6 +1682,14 @@
   async function startApplication() {
     if (applicationStarted) return;
     applicationStarted = true;
+    try {
+      await initializePreferences(apiFetch);
+      initializeTheme();
+      loadDensity();
+      loadSavedFilterStore();
+    } catch {
+      preferencesStorageError = true;
+    }
     await loadWorkspaces();
     void loadWorkspaceDiscovery();
     await Promise.all([loadInventory(), loadTrashDetection(), loadPlatformCapabilities(), loadPendingOperations(), loadRemoteSetup()]);
@@ -1726,6 +1836,51 @@
     return window.fetch(input, { ...init, headers });
   }
 
+  function indexCoverageLabels(nodes: IndexContentNode[], selected: Set<string>, group = ''): string[] {
+    return nodes.flatMap(node => {
+      if (node.children?.length) return indexCoverageLabels(node.children, selected, node.label);
+      if (!selected.has(node.id)) return [];
+      return [node.id.includes('.') && group ? group + '／' + node.label : node.label];
+    });
+  }
+
+  function describeSearchCoverage({ available, index, content_tree }: SearchIndexCoverage) {
+    if (index?.rebuild_required) return '索引范围待重建，仍可直接搜索原文。';
+    if (!available || !index?.documents || (!index.indexed_files && !index.partial_files)) {
+      return '当前工作区暂无可用索引，仍可直接搜索原文。';
+    }
+    let content = '默认内容';
+    if (index.settings.content) {
+      const labels = indexCoverageLabels(content_tree ?? [], new Set(index.settings.content));
+      content = labels.slice(0, 3).join('、') || '自选内容';
+      if (labels.length > 3) content += `等 ${labels.length} 项`;
+    }
+    const files = `覆盖 ${formatNumber(index.indexed_files)} / ${formatNumber(index.catalog_files)} 个会话文件`;
+    const partial = index.partial_files ? `，另有 ${formatNumber(index.partial_files)} 个部分覆盖` : '';
+    const range = index.settings.recent_context ? '\n普通内容仅加速最近约一个窗口，压缩摘要按所选范围加速。' : '';
+    return `当前工作区已加速 · ${content}\n${files}${partial}${range}`;
+  }
+
+  async function loadSearchCoverage() {
+    const root = currentWorkspace?.root;
+    if (!root || searchCoverageRequest?.root === root) return;
+    const request = { root };
+    searchCoverageRequest = request;
+    searchCoverage = { root, text: '正在读取索引覆盖…' };
+    const current = () => searchCoverageRequest === request && currentWorkspace?.root === root;
+    try {
+      const response = await apiFetch('/api/v1/search-index');
+      if (!response.ok) throw new Error('无法读取索引覆盖');
+      const status: SearchIndexCoverage = await response.json();
+      if (status.available && status.root !== root) throw new Error('工作区已切换');
+      if (current()) searchCoverage = { root, text: describeSearchCoverage(status) };
+    } catch {
+      if (current()) searchCoverage = { root, text: '索引覆盖暂不可读，可继续搜索。' };
+    } finally {
+      if (searchCoverageRequest === request) searchCoverageRequest = null;
+    }
+  }
+
   async function loadRemoteSetup() {
     await loadRemoteCapabilities();
     await loadGitHubStatus();
@@ -1738,16 +1893,27 @@
     }
   }
 
+  function applySourcePolicy(root: string, policy: 'automatic' | 'readonly') {
+    if (root !== (currentWorkspace?.root || report?.root || '')) return;
+    if (sourcePolicy !== policy) invalidateOperationPreview();
+    sourcePolicy = policy;
+    if (policy === 'readonly' && (operationOptions.trash || operationOptions.permanent_delete)) {
+      operationOptions = { ...operationOptions, trash: false, permanent_delete: false };
+      invalidateOperationPreview();
+    }
+  }
+
   async function loadRemoteCapabilities() {
     const sourceRoot = currentWorkspace?.root;
     lifecycleWritesEnabled = false;
+    sourcePolicy = 'readonly';
     lifecycleFixtureOnly = false;
     lifecycleRestricted = false;
     lifecycleRealConversations = false;
     try {
       const response = await apiFetch('/api/v1/capabilities');
       if (!response.ok) throw new Error(`读取远端 provider 能力失败（HTTP ${response.status}）`);
-      const body = (await response.json()) as { write_enabled?: boolean; fixture_only?: boolean; restricted_real_execution?: { enabled: boolean }; real_conversation_execution?: { enabled: boolean }; remote_archive_provider_ready?: boolean; remote_archive?: RemoteArchiveProviderInfo; summary?: { providers?: string[] } };
+      const body = (await response.json()) as { source_policy?: 'automatic' | 'readonly'; write_enabled?: boolean; fixture_only?: boolean; restricted_real_execution?: { enabled: boolean }; real_conversation_execution?: { enabled: boolean }; remote_archive_provider_ready?: boolean; remote_archive?: RemoteArchiveProviderInfo; summary?: { providers?: string[] } };
       if (sourceRoot !== currentWorkspace?.root) return;
       lifecycleRestricted = body.restricted_real_execution?.enabled ?? false;
       lifecycleRealConversations = body.real_conversation_execution?.enabled ?? false;
@@ -1755,6 +1921,7 @@
       if (lifecycleRestricted && operationOptions.archive) {
         operationOptions = { archive: false, archive_local: false, archive_remote: false, encrypted: false, trash: true, permanent_delete: false };
       }
+      applySourcePolicy(sourceRoot || '', body.source_policy || 'automatic');
       lifecycleFixtureOnly = lifecycleWritesEnabled && (body.fixture_only ?? false);
       remoteProvider = body.remote_archive ?? null;
       remoteProviderConfigured = body.remote_archive_provider_ready ?? false;
@@ -1773,7 +1940,13 @@
       if (!response.ok) throw new Error(`读取工作区失败（HTTP ${response.status}）`);
       const body = (await response.json()) as WorkspaceResponse;
       workspaces = body.workspaces ?? [];
-      currentWorkspace = body.current?.root ? body.current : workspaces.find((item) => item.id === body.current_id) ?? null;
+      const next = body.current?.root ? body.current : workspaces.find((item) => item.id === body.current_id) ?? null;
+      if (currentWorkspace?.root !== next?.root) {
+        resetSearchResults();
+        sourcePolicy = 'readonly';
+        invalidateOperationPreview();
+      }
+      currentWorkspace = next;
       workspacePersisted = body.persisted === true;
       workspaceRegistryPath = body.registry_path ?? '';
       workspaceServiceAddress = window.location.origin;
@@ -1960,8 +2133,20 @@
     try {
       const response = await apiFetch('/api/v1/update/status');
       if (!response.ok) throw new Error(`读取更新状态失败（HTTP ${response.status}）`);
-      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string };
+      const body = (await response.json()) as { available?: boolean; status?: UpdateStatus; reason?: string; running_version?: string; restart_available?: boolean; restart_required?: boolean; automatic_available?: boolean };
       updateStatus = body.available && body.status ? body.status : null;
+      updateRunningVersion = body.running_version || '';
+      updateRestartAvailable = body.restart_available === true;
+      updateAutomaticAvailable = body.automatic_available === true;
+      updateRestartRequired = body.restart_required === true;
+      updateProxyURL = updateStatus?.online_proxy_url || '';
+      if (updateProxyURL) {
+        try {
+          const savedProxy = new URL(updateProxyURL);
+          updateProxyScheme = savedProxy.protocol.slice(0, -1);
+          updateProxyAddress = savedProxy.host;
+        } catch { updateProxyScheme = 'http'; updateProxyAddress = '127.0.0.1:7890'; }
+      }
       onlineUpdate = null;
       if (!body.available && body.reason) updateMessage = body.reason;
     } catch (error) {
@@ -1970,27 +2155,92 @@
     }
   }
 
+  const automaticUpdateLabels: Record<string, string> = {
+    disabled: '已关闭', idle: '等待检查', checking: '正在检查', downloading: '正在下载',
+    waiting_idle: '已准备好，空闲时更新', activating: '正在安装', restart_pending: '等待空闲重启', up_to_date: '暂无可用更新',
+    failed: '暂未完成，稍后重试', blocked_version: '已跳过不可用版本',
+    paused: '发布方已暂停在线更新',
+  };
+
+  async function refreshAutomaticUpdateStatus() {
+    if (updateStatusPolling) return;
+    updateStatusPolling = true;
+    try {
+      const response = await apiFetch('/api/v1/update/status');
+      const body = await response.json() as { status?: UpdateStatus };
+      if (response.ok && body.status && updateStatus) updateStatus = { ...updateStatus, state: body.status.state, automatic: body.status.automatic, last_cleanup: body.status.last_cleanup, download: body.status.download };
+    } catch { /* 状态轮询失败时保留已显示的设置。 */ }
+    finally { updateStatusPolling = false; }
+  }
+
+  async function setAutomaticUpdate(control: HTMLInputElement) {
+    if (updateLoading) return;
+    const enabled = control.checked;
+    updateLoading = true;
+    try {
+      const response = await apiFetch('/api/v1/update/automatic', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const body = await response.json() as { status?: UpdateStatus; error?: string };
+      if (!response.ok || !body.status) throw new Error(body.error || '无法保存自动更新设置');
+      updateStatus = body.status;
+      updateMessage = enabled ? '已开启自动更新。' : '已关闭自动更新，仍可手动检查。';
+    } catch (error) { updateMessage = error instanceof Error ? error.message : '无法保存自动更新设置'; }
+    finally { control.checked = updateStatus?.automatic?.enabled !== false; updateLoading = false; }
+  }
+
   async function checkOnlineUpdate() {
     if (!updateStatus?.online_configured || updateLoading) return;
     updateLoading = true;
+    updateAction = 'check';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/check');
       const body = (await response.json()) as { check?: OnlineCheck; available?: boolean; error?: string };
       if (!response.ok || !body.check) throw new Error(body.error || `在线版本检查失败（HTTP ${response.status}）`);
       onlineUpdate = body.check;
-      updateMessage = body.check.available && body.check.release ? `发现 ${body.check.release.version} 可用更新，请下载并预检。` : '当前已没有更高版本。';
+      updateMessage = body.check.updates_paused ? `发布方已暂停在线更新${body.check.pause_reason ? `：${body.check.pause_reason}` : '。'}` : body.check.available && body.check.release ? `发现 ${body.check.release.version} 可用更新，请下载并预检。` : '当前已没有更高版本。';
     } catch (error) {
       onlineUpdate = null;
       updateMessage = error instanceof Error ? error.message : '在线版本检查失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
+    }
+  }
+
+  async function saveUpdateProxy() {
+    if (!updateStatus || updateLoading) return;
+    updateLoading = true;
+    updateAction = 'proxy';
+    updateMessage = '';
+    try {
+      const response = await apiFetch('/api/v1/update/proxy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxy_url: updateProxyAddress.trim() ? `${updateProxyScheme}://${updateProxyAddress.trim()}` : '' })
+      });
+      const body = (await response.json()) as { status?: UpdateStatus; error?: string };
+      if (!response.ok || !body.status) throw new Error(body.error || `保存更新代理失败（HTTP ${response.status}）`);
+      updateStatus = body.status;
+      updateProxyURL = body.status.online_proxy_url || '';
+      if (updateProxyURL) {
+        const savedProxy = new URL(updateProxyURL);
+        updateProxyScheme = savedProxy.protocol.slice(0, -1);
+        updateProxyAddress = savedProxy.host;
+      }
+      onlineUpdate = null;
+      updateMessage = updateProxyURL ? '更新代理已保存；仅用于在线更新。' : '已关闭更新代理。';
+    } catch (error) {
+      updateMessage = error instanceof Error ? error.message : '保存更新代理失败';
+    } finally {
+      updateLoading = false;
+      updateAction = '';
     }
   }
 
   async function prepareOnlineUpdate() {
     if (!onlineUpdate?.available || !onlineUpdate.release || updateLoading) return;
     updateLoading = true;
+    updateAction = 'download';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/prepare-online', {
@@ -2005,6 +2255,7 @@
       updateMessage = error instanceof Error ? error.message : '在线更新预检失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
@@ -2025,6 +2276,7 @@
       return;
     }
     updateLoading = true;
+    updateAction = 'offline';
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/prepare', {
@@ -2040,22 +2292,64 @@
       updateMessage = error instanceof Error ? error.message : '更新预检失败';
     } finally {
       updateLoading = false;
+      updateAction = '';
     }
   }
 
-  async function activateUpdate() {
-    if (!updatePlan || updateLoading || !window.confirm(`确认将下一次启动版本切换为 ${updatePlan.version}？当前 daemon 不会自动重启。`)) return;
+  async function waitForUpdateRestart(expectedVersion: string) {
+    updateMessage = '正在等待后台任务完成并重新启动，请稍候。端口变化时会自动打开新页面。';
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        const response = await window.fetch('/healthz', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+        const health = await response.json() as { status?: string; version?: string };
+        if (response.ok && health.status === 'ok' && health.version === expectedVersion) {
+          window.location.reload();
+          return;
+        }
+        if (response.ok && health.status === 'ok' && health.version !== expectedVersion) {
+          const statusResponse = await apiFetch('/api/v1/update/status');
+          const statusBody = await statusResponse.json() as { status?: UpdateStatus };
+          if (statusResponse.ok && statusBody.status?.state.last_status === 'startup_rolled_back') { window.location.reload(); return; }
+        }
+      } catch { /* 旧后台退出与新后台启动之间短暂断开连接是正常现象。 */ }
+    }
+    updateMessage = '此页面尚未连上新版本。后台可能仍在等待任务结束，或已使用新端口打开页面；请查看托盘。重启失败详情见日志目录中的 update-restart.log。';
+  }
+
+  async function restartUpdate() {
+    if (!updateStatus?.state.active_version || updateLoading || !window.confirm('现在重新启动应用，使已准备好的版本生效？已有任务会先正常完成。')) return;
+    updateLoading = true;
+    try {
+      const response = await apiFetch('/api/v1/update/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: updateStatus.state.active_version }) });
+      const body = await response.json() as { restart_scheduled?: boolean; version?: string; error?: string };
+      if (!response.ok || !body.restart_scheduled || !body.version) throw new Error(body.error || '未能安排重启');
+      await waitForUpdateRestart(body.version);
+    } catch (error) {
+      updateMessage = error instanceof Error ? error.message : '未能安排重启';
+    } finally {
+      updateLoading = false;
+    }
+  }
+
+  async function activateUpdate(restart = false, plan: Pick<UpdatePlan, 'id' | 'version'> | null = updatePlan) {
+    if (!plan || updateLoading || !window.confirm(restart ? `更新到 ${plan.version} 并重新启动应用？已有任务会先正常完成。` : `准备更新到 ${plan.version}？稍后重新启动应用时生效。`)) return;
     updateLoading = true;
     updateMessage = '';
     try {
       const response = await apiFetch('/api/v1/update/activate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: updatePlan.id })
+        body: JSON.stringify({ plan_id: plan.id, restart })
       });
-      const body = (await response.json()) as { result?: { active_version?: string }; error?: string };
+      const body = (await response.json()) as { result?: { active_version?: string }; error?: string; restart_scheduled?: boolean; restart_error?: string };
       if (!response.ok || !body.result) throw new Error(body.error || `更新切换失败（HTTP ${response.status}）`);
       updatePlan = null;
-      updateMessage = `已切换到 ${body.result.active_version || '新版本'}；请按部署方式重启 daemon。`;
+      if (body.restart_scheduled && body.result.active_version) {
+        await waitForUpdateRestart(body.result.active_version);
+        return;
+      }
+      updateMessage = body.restart_error || `更新已准备好，重新启动应用后将使用 ${body.result.active_version || '新版本'}。`;
       await loadUpdateStatus();
       await loadUpdatePreflight();
     } catch (error) {
@@ -2073,7 +2367,7 @@
       const response = await apiFetch('/api/v1/update/rollback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const body = (await response.json()) as { result?: { active_version?: string }; error?: string };
       if (!response.ok || !body.result) throw new Error(body.error || `更新回滚失败（HTTP ${response.status}）`);
-      updateMessage = `已回滚到 ${body.result.active_version || '旧版本'}；请按部署方式重启 daemon。`;
+      updateMessage = `已准备回滚到 ${body.result.active_version || '旧版本'}，重新启动应用后生效。`;
       await loadUpdateStatus();
     } catch (error) {
       updateMessage = error instanceof Error ? error.message : '更新回滚失败';
@@ -2627,7 +2921,7 @@
       void loadLatestBatchReview();
       inventoryReady = true;
       if (activeWorkspace === 'pending') void loadPendingConversations();
-      if (search.trim()) await runSearch(false, false);
+      if (search.trim() && !searchExecutedQuery) void runSearch(false);
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : '无法连接本地 daemon';
     } finally {
@@ -3103,7 +3397,7 @@
     routeConversationError = '';
     try {
       if (selectedConversation?.id === conversationID) return;
-      const knownConversation = conversations.find((conversation) => conversation.id === conversationID);
+      const knownConversation = knownConversations.get(conversationID);
       if (knownConversation) {
         await activateConversation(knownConversation);
         return;
@@ -3249,7 +3543,7 @@
     try {
       const sourceIDs: string[] = [];
       for (const id of ids) {
-        let conversation = conversations.find((item) => item.id === id);
+        let conversation = knownConversations.get(id);
         if (!conversation) {
           const response = await apiFetch(`/api/v1/conversations/${encodeURIComponent(id)}`);
           const body = await response.json() as { conversation?: ConversationSummary; error?: string };
@@ -3317,11 +3611,32 @@
         summaryResults = Object.fromEntries(Object.entries(summaryResults).filter(([id]) => !removed.has(id)));
       }
     }
-    searchHits = searchHits.filter(hit => !removed.has(hit.conversation_id || '') && !removedPaths.has(hit.relative_path));
+    const searchRemoved = completedRemovalIDs(root, executionTasks, searchSnapshotAt);
+    searchHits = searchHits.filter(hit => !searchRemoved.has(hit.conversation_id || '') && !removedPaths.has(hit.relative_path));
+    searchItems = searchItems.filter(item => !searchRemoved.has(item.id));
     const pendingRemoved = completedRemovalIDs(root, executionTasks, pendingConversationSnapshotAt);
     const pendingItems = pendingConversationItems.filter(item => !pendingRemoved.has(item.id));
     pendingConversationTotal = Math.max(0, pendingConversationTotal - (pendingConversationItems.length - pendingItems.length));
     pendingConversationItems = pendingItems;
+  }
+
+  function appendConversationFilters(query: URLSearchParams, prefix = '') {
+    const values: Record<string, string> = {
+      status: statusFilter === '全部状态' ? '' : statusFilter,
+      q: conversationQuery,
+      cwd: cwdFilter,
+      model: modelFilter,
+      model_exact: modelFilter.trim() && modelExact ? 'true' : '',
+      cwd_exact: cwdFilter.trim() && cwdExact ? 'true' : '',
+      from: fromFilter,
+      to: toFilter,
+      min_tokens: minTokensFilter,
+      max_tokens: maxTokensFilter,
+      min_bytes: minBytesFilter,
+      max_bytes: maxBytesFilter,
+      has_diagnostics: diagnosticsFilter
+    };
+    for (const [key, value] of Object.entries(values)) if (value.trim()) query.set(prefix + key, value.trim());
   }
 
   async function loadConversations(reset = true, preserveView = false) {
@@ -3343,19 +3658,7 @@
     try {
       const limit = preserveView ? Math.min(1000, Math.max(conversationPageSize, conversationOffset)) : conversationPageSize;
       const query = new URLSearchParams({ offset: String(reset ? 0 : conversationOffset), limit: String(limit) });
-      if (statusFilter !== '全部状态') query.set('status', statusFilter);
-      if (conversationQuery.trim()) query.set('q', conversationQuery.trim());
-      if (cwdFilter.trim()) query.set('cwd', cwdFilter.trim());
-      if (modelFilter.trim()) query.set('model', modelFilter.trim());
-      if (modelFilter.trim() && modelExact) query.set('model_exact', 'true');
-      if (cwdFilter.trim() && cwdExact) query.set('cwd_exact', 'true');
-      if (fromFilter) query.set('from', fromFilter);
-      if (toFilter) query.set('to', toFilter);
-      if (minTokensFilter.trim()) query.set('min_tokens', minTokensFilter.trim());
-      if (maxTokensFilter.trim()) query.set('max_tokens', maxTokensFilter.trim());
-      if (minBytesFilter.trim()) query.set('min_bytes', minBytesFilter.trim());
-      if (maxBytesFilter.trim()) query.set('max_bytes', maxBytesFilter.trim());
-      if (diagnosticsFilter) query.set('has_diagnostics', diagnosticsFilter);
+      appendConversationFilters(query);
       const response = await apiFetch(`/api/v1/conversations?${query}`);
       if (!response.ok) throw new Error(`读取对话列表失败（HTTP ${response.status}）`);
       const body = (await response.json()) as { items?: ConversationSummary[]; total?: number; generated_at?: string };
@@ -3371,7 +3674,7 @@
       if (report) report = { ...report, conversations: reset ? items : [...report.conversations, ...items], conversation_total: conversationTotal };
       reconcileRemovedConversationRows();
       if (preserveView) return;
-      if (reset) {
+      if (reset && !searchExecutedQuery) {
         const loadedItems = report?.conversations || items;
         const requestedID = activeWorkspace === 'sessions' ? routeConversationID : '';
         routeConversationLoading = Boolean(requestedID);
@@ -3591,20 +3894,25 @@
   async function clearSearch() {
     search = '';
     searchDraft = '';
-    searchRequestToken += 1;
-    searching = false;
-    searchHits = [];
-    searchLimited = false;
-    searchExecutedQuery = '';
+    searchScope = '';
     selectWorkspaceView('sessions');
-    await loadConversations(true);
+    await reloadSessionResults();
   }
 
   async function submitSearch() {
-    search = searchDraft.trim();
+    const next = searchDraft.trim();
+    if (next !== search || !next) searchScope = '';
+    search = next;
     selectWorkspaceView('sessions');
     errorMessage = '';
     await runSearch();
+  }
+
+  async function changeSearchScope(scope: SearchScope) {
+    if (scope === searchScope || !search.trim()) return;
+    searchScope = scope;
+    navigateToRoute({ page: 'sessions' }, false, true);
+    await runSearch(false);
   }
 
   function onConversationScroll(event: Event) {
@@ -3747,47 +4055,92 @@
     }
   }
 
-  async function runSearch(showErrors = true, selectFirstMatch = true) {
-    const requestToken = ++searchRequestToken;
+  async function runSearch(selectFirstMatch = true) {
+    resetSearchResults();
     const sourceRoot = currentWorkspace?.root;
-    const requestedAt = new Date().toISOString();
-    searchLimited = false;
-    if (!search.trim()) {
-      searchHits = [];
-      searchExecutedQuery = '';
-      searching = false;
-      return;
-    }
     const queryText = search.trim();
+    if (!queryText || !sourceRoot) return;
+    const controller = new AbortController();
+    searchController = controller;
+    const requestToken = searchRequestToken;
+    const isCurrent = () => requestToken === searchRequestToken && sourceRoot === currentWorkspace?.root;
     searching = true;
-    searchExecutedQuery = '';
+    searchExecutedQuery = queryText;
+    searchProgressText = '正在读取会话目录…';
+    searchSnapshotAt = new Date().toISOString();
+    listScrollTop = 0;
+    if (conversationListElement) conversationListElement.scrollTop = 0;
+    const previousSelection = selectedConversation?.id;
     try {
-      const query = new URLSearchParams({ q: queryText, limit: '200' });
-      const response = await apiFetch(`/api/v1/search?${query}`);
-      if (!response.ok) throw new Error(`搜索失败（HTTP ${response.status}）`);
-      const body = (await response.json()) as { hits: SearchHit[]; candidate_limit_reached?: boolean; snapshot_generated_at?: string };
-      if (requestToken !== searchRequestToken || sourceRoot !== currentWorkspace?.root) return;
-      const snapshotAt = Date.parse(body.snapshot_generated_at || '') > 0 ? body.snapshot_generated_at : requestedAt;
-      const removed = completedRemovalIDs(sourceRoot || '', executionTasks, snapshotAt);
-      searchHits = (body.hits ?? []).filter(hit => !removed.has(hit.conversation_id || ''));
-      searchLimited = Boolean(body.candidate_limit_reached);
-      searchExecutedQuery = queryText;
-      listScrollTop = 0;
-      if (conversationListElement) conversationListElement.scrollTop = 0;
-      const firstHit = searchHits[0];
-      const firstMatch = firstHit ? conversations.find((conversation) => firstHit.conversation_id === conversation.id || conversation.rollout_paths.includes(firstHit.relative_path)) : undefined;
-      if (selectFirstMatch && firstMatch && selectedConversation?.id !== firstMatch.id) {
-        await activateConversation(firstMatch);
+      const query = new URLSearchParams({ q: queryText, limit: '200', stream: '1' });
+      if (searchScope) query.set('scope', searchScope);
+      appendConversationFilters(query, 'conversation_');
+      const response = await apiFetch(`/api/v1/search?${query}`, { signal: controller.signal });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `搜索失败（HTTP ${response.status}）`);
+      }
+      if (!response.body || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+        throw new Error('当前后端不支持搜索进度，请更新后端后重试。');
+      }
+      const stream = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let pending = '';
+      try {
+        while (!searchCompleted && isCurrent()) {
+          const { done, value } = await stream.read();
+          if (!isCurrent()) return;
+          if (done) break;
+          pending += value;
+          const lines = pending.split('\n');
+          pending = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const event = JSON.parse(line) as SearchStreamEvent;
+            if (event.type === 'error') throw new Error(event.error);
+            if (event.type === 'catalog') {
+              searchProgressText = event.files_seen ? `正在读取会话目录 · 已发现 ${formatNumber(event.files_seen)} 个文件` : '正在读取会话目录…';
+            } else if (event.type === 'search') {
+              searchStage = event.stage;
+              searchFilesDone = event.files_done ?? 0;
+              searchFilesTotal = event.files_total ?? 0;
+              searchProgressText = searchStage === 'index' ? '正在查索引' : searchStage === 'source' ? '正在读取原文' : '正在搜索会话';
+              if (event.snapshot_generated_at) searchSnapshotAt = event.snapshot_generated_at;
+              const removed = completedRemovalIDs(sourceRoot, executionTasks, searchSnapshotAt);
+              if (event.hits?.length) searchHits = [...searchHits, ...event.hits.filter(hit => !removed.has(hit.conversation_id || ''))];
+              if (event.items?.length) searchItems = [...searchItems, ...event.items.filter(item => !removed.has(item.id))];
+            } else if (event.type === 'done') {
+              searchCompleted = true;
+              searchLimited = Boolean(event.candidate_limit_reached);
+            }
+          }
+        }
+      } finally {
+        stream.releaseLock();
+      }
+      if (!isCurrent()) return;
+      if (!searchCompleted) throw new Error('搜索连接提前结束，已显示的结果可能不完整。');
+      const firstMatch = searchItems[0];
+      if (selectFirstMatch && firstMatch && selectedConversation?.id === previousSelection && previousSelection !== firstMatch.id) {
+        void activateConversation(firstMatch);
         compactPane = 'sessions';
       }
     } catch (error) {
-      if (requestToken !== searchRequestToken || sourceRoot !== currentWorkspace?.root) return;
-      searchHits = [];
-      searchExecutedQuery = queryText;
-      if (showErrors) errorMessage = error instanceof Error ? error.message : '搜索失败';
+      if (!isCurrent()) return;
+      searchMessage = error instanceof Error ? error.message : '搜索失败';
+      controller.abort();
     } finally {
-      if (requestToken === searchRequestToken) searching = false;
+      if (isCurrent()) {
+        searching = false;
+        searchController = null;
+      }
     }
+  }
+
+  async function refreshImpactLibrary() {
+    clearConversationSelection();
+    reviewPanelOpen = false;
+    batchPanelOpen = false;
+    await refreshInventory();
   }
 
   async function loadImpactPreview() {
@@ -4222,11 +4575,13 @@
       <h1>对话档案库</h1>
     </div>
     <form class="global-search" on:submit|preventDefault={submitSearch}>
-      <span class="search-icon" aria-hidden="true">⌕</span>
-      <input bind:value={searchDraft} aria-label="搜索对话正文和元数据" aria-keyshortcuts="/ Control+K Meta+K" placeholder="搜索对话、正文或路径" />
-      {#if searchDraft || search}<button class="search-clear" type="button" aria-label="清除搜索" title="清除搜索" on:click={() => void clearSearch()}>×</button>{/if}
-      <span class="search-shortcut" title="聚焦搜索">⌘K</span>
-      <button type="submit" disabled={searching}>{searching ? '搜索中…' : '搜索'}</button>
+      <div class="global-search-field">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input bind:value={searchDraft} aria-label="搜索对话正文" aria-keyshortcuts="/ Control+K Meta+K" placeholder="搜索对话正文" />
+        {#if searchDraft || search}<button class="search-clear" type="button" aria-label="清除搜索" title="清除搜索" on:click={() => void clearSearch()}>×</button>{/if}
+        <HelpBubble id="global-search-help" label="正文搜索说明" text={searchHeaderHelp} onOpen={loadSearchCoverage} />
+      </div>
+      <button type="submit" disabled={!currentWorkspace?.root}>搜索</button>
     </form>
     <span class="readonly-badge" class:write-enabled={lifecycleWritesEnabled} title={lifecycleWritesEnabled && lifecycleFixtureOnly ? '写入仅限明确指定的测试样本或稳定副本，真实 .codex 保持只读' : undefined}>
       <span class="status-dot"></span>{lifecycleWritesEnabled ? (lifecycleFixtureOnly ? '测试样本写入' : lifecycleRealConversations ? '本机会话执行' : '受限真实执行') : '只读模式'}
@@ -4491,7 +4846,7 @@
             <div><strong>列表与阅读布局</strong><p>紧凑显示更多会话，阅读模式给正文更多空间。</p></div>
             <DensityControl value={density} on:change={(event) => setDensity(event.detail)} />
           </div>
-          {#if densityStorageError}<p class="settings-save-warning" role="status">当前设置已生效，但浏览器禁止保存；刷新后可能恢复默认。</p>{/if}
+          {#if preferencesStorageError}<p class="settings-save-warning" role="status">界面设置未能同步保存；当前仍可使用，请稍后重新打开应用后重试。</p>{/if}
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('workspaces')}
@@ -4522,6 +4877,13 @@
 	        <button class="secondary-button" type="submit" disabled={workspaceLoading || workspacePersisted !== true || !workspaceRoot.trim()}>{workspaceLoading ? '处理中…' : '添加并读取'}</button>
 	      </form>
 	      {#if workspaceMessage}<div class="workspace-message" role="status">{workspaceMessage}</div>{/if}
+        </SettingsPanel>
+      {/if}
+      {#if visibleIDs.includes('searchIndex')}
+        <SettingsPanel id="searchIndex">
+          {#key currentWorkspace?.id}
+            <SearchIndexSettings request={apiFetch} />
+          {/key}
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('copy')}
@@ -4900,22 +5262,8 @@
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('adapter')}
-        <SettingsPanel id="adapter">
-      {#if report}
-        <div class="workspace-card">
-          <div class="workspace-icon">⌂</div>
-          <div class="workspace-path" title={report.root}>{report.root}</div>
-        </div>
-        {#if report.adapter}
-          <div class="adapter-card">
-            <div><span class:adapter-ok={report.adapter.matched} class="adapter-dot"></span><strong>{report.adapter.descriptor?.id || '通用只读'}</strong></div>
-            <span>{report.adapter.identity?.version || '版本未知'} · {report.adapter.matched ? '已匹配' : '只读降级'}{report.adapter.identity?.schema_fingerprints?.length ? ` · ${report.adapter.identity.schema_fingerprints.length} 个 schema` : ''}</span>
-          </div>
-        {/if}
-      {:else}
-        <div class="empty-note">尚未连接 daemon</div>
-      {/if}
-
+        <SettingsPanel id="adapter" helpText={compatibilityHelp}>
+          <CompatibilitySettings root={currentWorkspace?.root || report?.root || ''} request={apiFetch} bind:helpText={compatibilityHelp} on:policychange={event => applySourcePolicy(event.detail.root, event.detail.policy)} />
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('platform')}
@@ -4944,33 +5292,49 @@
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('updates')}
-        <SettingsPanel id="updates">
+        <SettingsPanel id="updates" helpText="默认后台检查、下载和验签。网页不可见且后台任务空闲 5 分钟后自动重启，不主动打开浏览器；也可手动立即更新。启动失败会恢复旧版本和启动前的项目数据库与设置。确认成功 24 小时后清理本应用下载的安装包、预检副本和旧版本，截止时间跨重启保留；文件占用时重试，关闭自动更新不影响清理。保留当前程序、系统入口和待处理更新，不删除外部离线包，也不改动原始对话。观察期后不再提供旧版本一键回退。">
       {#if updateStatus}
       <div class="update-panel">
-        <div class="section-label">离线更新</div>
-        <div class="update-status-line"><span>当前版本</span><strong>{updateStatus.state.active_version || '未激活'}</strong></div>
+        {#if updateAutomaticAvailable && updateStatus.online_configured}
+          <div class="update-status-line"><label class="update-automatic-toggle"><input type="checkbox" checked={updateStatus.automatic?.enabled !== false} on:change={(event) => setAutomaticUpdate(event.currentTarget)} disabled={updateLoading} />自动更新</label></div>
+          {#if !updateStatus.download}<small class="copy-note">{automaticUpdateLabels[updateStatus.automatic?.phase || 'idle'] || '等待检查'}{updateStatus.automatic?.target_version ? ` · ${updateStatus.automatic.target_version}` : ''}</small>{/if}
+          {#if updateStatus.automatic?.phase === 'waiting_idle' && updateStatus.automatic.plan_id && updateStatus.automatic.target_version && !updatePlan}<button class="copy-confirm" disabled={updateLoading || updatePreflight?.blocked} on:click={() => activateUpdate(true, { id: updateStatus?.automatic?.plan_id || '', version: updateStatus?.automatic?.target_version || '' })}>立即更新并重启</button>{/if}
+          {#if updateStatus.automatic?.last_error}<HelpBubble id="automatic-update-error" label="自动更新详情" text={updateStatus.automatic.last_error} />{/if}
+        {/if}
+        <div class="update-status-line"><span>正在运行</span><strong>{updateRunningVersion || updateStatus.state.active_version || '未激活'}</strong></div>
+        {#if updateStatus.state.last_status === 'startup_rolled_back'}<div class="update-warning">更新未完成，已恢复旧版本。<HelpBubble id="update-startup-rollback" label="更新恢复详情" text={updateStatus.state.last_error || '新版本未通过实际启动检查，已恢复项目数据库与设置。此版本不会被自动重复安装。'} /></div>{/if}
+        {#if updateStatus.state.last_status === 'update_postponed'}<div class="update-warning">更新已暂缓，继续使用旧版本。<HelpBubble id="update-postponed" label="更新暂缓详情" text={updateStatus.state.last_error || '待网络或磁盘条件恢复后可重新更新。'} /></div>{/if}
+        {#if updateStatus.download}<div class="update-status-line"><span>{updateStatus.download.resumed ? '正在续传' : '正在下载'}</span><span>{formatBytes(updateStatus.download.received_bytes)} / {formatBytes(updateStatus.download.total_bytes)}</span></div><progress max={updateStatus.download.total_bytes} value={Math.min(updateStatus.download.received_bytes, updateStatus.download.total_bytes)} aria-label="更新包下载进度"></progress>{/if}
+        {#if updateRestartRequired}<div class="update-status-line"><span>重启后生效</span><strong>{updateStatus.state.active_version}</strong></div>{#if updateRestartAvailable}<button class="copy-confirm" on:click={restartUpdate} disabled={updateLoading}>立即重启</button>{/if}{/if}
         {#if updateStatus.state.previous_version}<div class="update-status-line"><span>可回滚版本</span><strong>{updateStatus.state.previous_version}</strong></div>{/if}
         <div class="update-status-line"><span>清单签名</span><strong>{updateStatus.signature_required ? `强制 · ${updateStatus.trusted_key_count} 个信任根` : '可用但未强制'}</strong></div>
         {#if updateStatus.recovery_required}<div class="update-warning">{updateStatus.recovery_message || '检测到未完成更新 journal，请先人工检查。'}</div>{/if}
         {#if updatePreflight?.blocked}<div class="update-warning">更新安全预检已阻断：{updatePreflight.migration?.status || (updatePreflight.adapter?.errors || []).join('；') || '请先处理迁移或兼容 adapter 问题。'}</div>{:else if updatePreflight}<small class="copy-note">更新安全预检：通过 · archive.db {updatePreflight.migration?.status || 'ready'}</small>{/if}
         {#if updateStatus.online_configured}
           <div class="update-online">
-            <div class="update-online-head"><span>在线 feed</span><small>{updateStatus.online_feed_url || '已配置'}</small></div>
-            <button class="secondary-button" on:click={checkOnlineUpdate} disabled={updateLoading}>{updateLoading ? '检查中…' : '检查在线更新'}</button>
+            <div class="update-online-head"><span>更新来源</span><small>{updateStatus.online_feed_url || '已配置'}</small></div>
+            <div class="update-proxy-field"><label for="update-proxy-scheme">代理协议</label><select id="update-proxy-scheme" bind:value={updateProxyScheme} disabled={updateLoading}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5h</option></select><label for="update-proxy-address">代理地址</label><input id="update-proxy-address" bind:value={updateProxyAddress} autocomplete="off" spellcheck="false" placeholder="127.0.0.1:7890" disabled={updateLoading} /></div>
+            <small class="copy-note">代理仅用于更新检查和下载。留空地址可关闭代理。</small>
+            <button class="secondary-button" on:click={saveUpdateProxy} disabled={updateLoading}>{updateAction === 'proxy' ? '保存中…' : '保存代理设置'}</button>
+            <button class="secondary-button" on:click={checkOnlineUpdate} disabled={updateLoading}>{updateAction === 'check' ? '检查中…' : '检查在线更新'}</button>
             {#if onlineUpdate?.available && onlineUpdate.release}
-              <div class="update-online-release"><strong>{onlineUpdate.release.version}</strong><span>{onlineUpdate.release.os}/{onlineUpdate.release.arch} · {formatBytes(onlineUpdate.release.size_bytes)}</span><button class="copy-confirm" on:click={prepareOnlineUpdate} disabled={updateLoading}>下载并预检</button></div>
+              <div class="update-online-release"><strong>{onlineUpdate.release.version}</strong><span>{onlineUpdate.release.os}/{onlineUpdate.release.arch} · {formatBytes(onlineUpdate.release.size_bytes)}</span><button class="copy-confirm" on:click={prepareOnlineUpdate} disabled={updateLoading}>{updateAction === 'download' ? '下载预检中…' : '下载并预检'}</button></div>
+            {:else if onlineUpdate?.updates_paused}
+              <small class="copy-note">发布方暂缓了在线更新，当前版本可继续使用。</small>
             {:else if onlineUpdate}
               <small class="copy-note">检查于 {formatTime(onlineUpdate.checked_at)}，当前没有更高版本。</small>
             {/if}
           </div>
         {/if}
         <input bind:value={updateBundleRoot} placeholder="离线包目录或 ZIP/TAR 文件绝对路径" aria-label="离线包目录或 ZIP/TAR 文件" />
-        <button class="secondary-button" on:click={prepareUpdate} disabled={updateLoading || !updateBundleRoot.trim()}>{updateLoading ? '处理中…' : '预检离线包'}</button>
+        <button class="secondary-button" on:click={prepareUpdate} disabled={updateLoading || !updateBundleRoot.trim()}>{updateAction === 'offline' ? '处理中…' : '预检离线包'}</button>
         {#if updatePlan}
-          <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span><small>计划 {updatePlan.id}</small><button class="copy-confirm" on:click={activateUpdate} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button></div>
+          <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span>{#if updateRestartAvailable}<button class="copy-confirm" on:click={() => activateUpdate(true)} disabled={updateLoading || updatePreflight?.blocked}>更新并重启</button><button class="secondary-button" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>稍后重启</button>{:else}<button class="copy-confirm" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button>{/if}</div>
         {/if}
         {#if updateStatus.state.previous_version}<button class="update-rollback" on:click={rollbackUpdate} disabled={updateLoading}>回滚到 {updateStatus.state.previous_version}</button>{/if}
-        <small class="copy-note">更新只切换独立安装根的版本指针，不修改 Codex 数据；切换后需要按部署方式重启 daemon。</small>
+        <small class="copy-note">{updateStatus.state.cleanup_after ? `恢复窗口截至 ${formatTime(updateStatus.state.cleanup_after)}，随后自动清理旧包和旧版本。` : '不长期保留历史安装包。'}</small>
+        {#if updateStatus.last_cleanup?.removed_items}<small class="copy-note">上次自动清理释放 {formatBytes(updateStatus.last_cleanup.freed_bytes)}。</small>{/if}
+        {#if updateStatus.last_cleanup?.warnings?.length}<HelpBubble id="update-cleanup-warning" label="更新清理说明" text={updateStatus.last_cleanup.warnings.join('；')} />{/if}
         {#if updateMessage}<div class="update-message">{updateMessage}</div>{/if}
       </div>
       {:else}
@@ -5022,11 +5386,26 @@
       <header class="library-list-header">
         <div class="library-list-heading">
           <button type="button" class="library-icon-button library-show-sidebar" aria-label="打开项目与视图" on:click={() => compactPane = 'workspace'}><PanelLeft aria-hidden="true" /></button>
-          <div><h2>会话库 <span>{formatNumber(searchIsApplied ? displayedConversations.length : conversationTotal)}</span></h2><p>{conversationsLoading && !conversations.length ? '正在读取对话列表…' : searchIsApplied ? `已载入命中 ${formatNumber(displayedConversations.length)} 个会话 · ${formatNumber(searchHits.length)} 处正文` : `最近更新 · 已载入 ${formatNumber(conversations.length)} / ${formatNumber(conversationTotal)}`}</p></div>
+          <div><h2>会话库 <span>{formatNumber(searchIsApplied ? displayedConversations.length : conversationTotal)}</span></h2><p>{searchIsApplied ? `命中 ${formatNumber(displayedConversations.length)} 个会话 · ${searchLimited ? '前 ' : ''}${formatNumber(searchHits.length)} 处正文` : (loading || conversationsLoading) && !conversations.length ? '正在读取对话列表…' : `最近更新 · 已载入 ${formatNumber(conversations.length)} / ${formatNumber(conversationTotal)}`}</p></div>
           <button type="button" class="secondary-button library-filter-button" aria-expanded={conversationFiltersOpen} on:click={openConversationFilters}><ListFilter aria-hidden="true" />筛选{#if activeConversationFilterCount}<span>{activeConversationFilterCount}</span>{/if}</button>
         </div>
         <div class="library-read-status" class:library-stale={report?.stale || report?.snapshot_status === 'stale'} role="status"><span class="status-dot"></span><span>{liveModeLabel}</span>{#if report?.stale || report?.snapshot_status === 'stale'}<strong>数据有变化</strong><button type="button" on:click={() => refreshInventory()} disabled={loading}>{loading ? '刷新中…' : '刷新'}</button>{:else}<span class="library-status-time">{loading ? '正在读取…' : report ? '快照已载入' : '正在连接…'}</span>{/if}</div>
-        {#if searchLimited}<p class="library-sidebar-empty" role="status">本次仅检查前 500 条候选记录。可细化关键词，或在单个会话内继续搜索。</p>{/if}
+        {#if searchIsApplied}
+          <div class="library-search-controls">
+            <SearchScopeControl value={searchScope} helpID="library-search-help" helpDetail={searchResultsHelp}
+              onHelpOpen={loadSearchCoverage} onChange={scope => void changeSearchScope(scope)} />
+          </div>
+        {/if}
+        {#if searching}
+          <div class="library-read-status library-search-status">
+            <span role="status">{searchProgressText}</span>
+            {#if searchFilesTotal}<span class="library-search-file-count" aria-label="已检查文件">{formatNumber(searchFilesDone)} / {formatNumber(searchFilesTotal)} 文件</span>{/if}
+            <button type="button" on:click={() => { stopSearch(); searchMessage = '搜索已停止，已找到的结果仍可查看。'; }}>停止</button>
+          </div>
+          {#if searchFilesTotal}<progress class="library-search-progress" class:scanning={searchStage === 'source'} max={searchFilesTotal} value={searchFilesDone} aria-label={searchProgressText}></progress>{/if}
+        {:else if searchMessage}
+          <div class="library-read-status library-search-status library-stale"><span role="status">{searchMessage}</span><button type="button" on:click={() => void runSearch(false)}>重新搜索</button></div>
+        {/if}
       </header>
       {#if activeFilterLabels.length}
         <div class="library-filter-chips" aria-label="当前筛选条件">
@@ -5043,16 +5422,21 @@
       {#if executionResult && !batchPanelOpen}<div class="operation-outcome" role="status"><span>{executionResultLabel(executionResult)}</span><button type="button" class="library-text-button" on:click={() => selectWorkspaceView('pending')}>查看执行记录</button><button type="button" class="library-icon-button" aria-label="关闭处理结果" on:click={() => executionResult = null}><X aria-hidden="true" /></button></div>{/if}
       {#if errorMessage}
         <div class="error-card" role="alert"><strong>暂时无法载入</strong><span>{errorMessage}</span><button class="secondary-button" on:click={() => refreshInventory()} disabled={loading}>{loading ? '重试中…' : '重试'}</button></div>
-      {:else if (loading || conversationsLoading) && (!report || conversationsLoading && conversations.length === 0)}
+      <!-- 扫描信息返回后仍可能等待重扫或列表请求；首次读取完成前不能显示空结果。 -->
+      {:else if !searchIsApplied && conversations.length === 0 && (!inventoryReady || loading || conversationsLoading)}
         <div class="loading-state"><div class="loading-state-icon" role="status" aria-label="正在加载"><LoaderCircle aria-hidden="true" /></div><strong>{report && conversationsLoading ? '正在读取历史对话' : '正在读取固定扫描根'}</strong><span>{report && conversationsLoading ? '正在整理会话列表，完成后即可开始阅读。' : '首次扫描可能需要一些时间，页面会逐步载入结果。'}</span><div class="loading-lines"><i></i><i></i><i></i></div></div>
-      {:else if searchHasNoResults || searchHasNoVisibleResults}
+      {:else if searchHasNoResults}
         <div class="no-results-state search-no-results" aria-live="polite">
           <div class="no-results-icon">⌕</div>
-          <strong>{searchHasNoResults ? searchLimited ? '已检查范围内没有命中' : '没有找到相关正文' : '命中会话尚未载入'}</strong>
-          <span>{searchHasNoResults ? searchLimited ? '尚有候选记录未检查，请细化关键词或打开单个会话搜索。' : `“${searchExecutedQuery}”没有命中可读取的对话正文。可以修改关键词，或清除搜索查看全部会话。` : `已找到 ${formatNumber(searchHits.length)} 条正文命中，但对应会话不在当前载入页。加载下一页后可继续查看。`}</span>
-          {#if searchHasNoVisibleResults && conversationOffset < conversationTotal}<button class="secondary-button" on:click={() => void loadMoreConversations()} disabled={conversationsLoadingMore}>{conversationsLoadingMore ? '正在加载下一页…' : '加载下一页会话'}</button>{:else}<button class="secondary-button" on:click={() => void clearSearch()}>清除搜索</button>{/if}
+          <strong>没有找到相关正文</strong>
+          <span>“{searchExecutedQuery}”在{searchScope === 'indexed' ? '已加速的内容' : '当前筛选范围'}内没有命中。</span>
+          {#if searchScope === 'indexed'}
+            <button type="button" class="secondary-button" on:click={() => void changeSearchScope('')}>改用全部搜索</button>
+          {:else}
+            <button type="button" class="secondary-button" on:click={() => void clearSearch()}>清除搜索</button>
+          {/if}
         </div>
-      {:else if conversations.length === 0}
+      {:else if !searchIsApplied && conversations.length === 0}
         <div class="no-results-state">
           <div class="no-results-icon">⌕</div>
           <strong>{search || activeConversationFilterCount ? '没有符合条件的对话' : '还没有可显示的对话'}</strong>
@@ -5065,14 +5449,15 @@
           <div class="conversation-row-size" aria-hidden="true" bind:clientHeight={measuredConversationRowHeight}></div>
           <div class="virtual-list-spacer" style={`height: ${displayedConversations.length * conversationRowHeight + (!searchIsApplied && conversationOffset < conversationTotal ? 40 : 0)}px`}>
             {#each visibleConversations as conversation, index (conversation.id)}
+              {@const origin = searchOriginsByConversation.get(conversation.id)}
               <div class:selected={selectedConversation?.id === conversation.id} class:conversation-row-selected={selectedConversation?.id === conversation.id} class:conversation-child={conversation.familyDepth > 0} class="conversation-row-shell" style={`top: ${(visibleStart + index) * conversationRowHeight}px; height: ${conversationRowHeight}px; --family-depth: ${Math.min(3, conversation.familyDepth)}`} role="listitem">
                 <label class="conversation-select" title={conversation.descendant_count ? `处理时一并纳入 ${conversation.descendant_count} 个子代理，执行前可核对` : conversation.thread_kind === 'subagent' ? '选择此子代理，保留父会话和兄弟线程' : '选择此对话；当前标签页刷新后保留选择'}>
                   <input type="checkbox" checked={selectedConversationIDs.has(conversation.id)} on:change={(event) => toggleConversationSelection(conversation.id, event.currentTarget.checked)} aria-label={`选择${conversation.title || '未命名对话'}`} />
                 </label>
                 {#if conversation.familyHasChildren}<button type="button" class="family-toggle" aria-label={`${conversation.familyExpanded ? '折叠' : '展开'}子代理：${conversation.title}`} aria-expanded={conversation.familyExpanded} on:click={() => toggleFamily(conversation.id)}><ChevronRight class={conversation.familyExpanded ? 'family-chevron-open' : ''} aria-hidden="true" /></button>{:else}<span class="family-toggle-spacer" aria-hidden="true"></span>{/if}
-                <button class="conversation-row" aria-label={`打开对话：${conversation.title || '未命名对话'}`} aria-current={selectedConversation?.id === conversation.id ? 'true' : undefined} on:click={() => chooseConversation(conversation)}>
+                <button class="conversation-row" aria-label={`打开对话：${conversation.title || '未命名对话'}${origin && searchIsApplied ? '，来源：' + searchOriginLabels[origin] : ''}`} aria-current={selectedConversation?.id === conversation.id ? 'true' : undefined} on:click={() => chooseConversation(conversation)}>
                   <div class="conversation-head"><span class="conversation-title" title={conversation.title || '未命名对话'}>{conversation.title || '未命名对话'}</span><time class="library-row-date" datetime={conversation.updated_at} title={formatTime(conversation.updated_at)}>{formatConversationDate(conversation.updated_at)}</time></div>
-                  <div class="conversation-preview">{#if searchIsApplied && conversationHasSearchHit(conversation)}<span class="library-hit">命中</span>{/if}{conversation.first_user_text || conversation.agent_path || (conversation.thread_kind === 'subagent' ? '独立代理线程' : '暂无内容预览')}</div>
+                  <div class="conversation-preview">{#if searchIsApplied && searchConversationIDs.has(conversation.id)}<span class="library-hit" class:source-hit={origin === 'source'}>{origin ? searchOriginLabels[origin] : '命中'}</span>{/if}{conversation.first_user_text || conversation.agent_path || (conversation.thread_kind === 'subagent' ? '独立代理线程' : '暂无内容预览')}</div>
                   <div class="conversation-meta-row">{#if conversation.thread_kind === 'subagent' && !conversation.title?.startsWith('子代理')}<span class="family-label" title={conversation.agent_path || '子代理'}>子代理</span>{/if}{#if conversation.parent_missing}<span class="family-warning">父会话缺失</span>{/if}{#if conversation.descendant_count}<span class="family-label">子代理 {conversation.descendant_count}</span>{/if}<span class="conversation-project" title={conversation.cwd || '未关联项目'}><FolderOpen aria-hidden="true" />{conversation.cwd ? projectLabel(conversation.cwd) : '未关联项目'}</span><span class="library-row-tokens">{formatTokens(conversation.token_usage.total_tokens)} tokens</span><span class="library-row-state" title={statusLabels[conversation.status] ?? conversation.status}><span class={`mini-dot ${conversation.status}`}></span>{statusLabels[conversation.status] ?? conversation.status}</span>{#if conversation.diagnostics?.length}<span class="library-row-risk" title="存在诊断，需要复核"><TriangleAlert aria-hidden="true" /><span class="sr-only">需要复核</span></span>{/if}</div>
                 </button>
               </div>
@@ -5129,11 +5514,11 @@
           {/if}
           </svelte:fragment>
           </ConversationReader>
-          {#if searchHits.length}
-            <div class="subheading">正文命中（{searchHits.length}）</div>
-            {#each searchHits.filter((hit) => selectedConversation && (hit.conversation_id === selectedConversation.id || selectedConversation.rollout_paths.includes(hit.relative_path))).slice(0, 12) as hit}
+          {#if selectedSearchHits.length}
+            <div class="subheading">正文命中（{selectedSearchHits.length}）</div>
+            {#each selectedSearchHits.slice(0, 12) as hit}
               <button class="search-hit" on:click={() => openSearchHit(hit)} title="定位到命中的消息">
-                <div class="search-hit-head"><strong>{hit.relative_path} · 第 {hit.line} 行</strong>{#if hit.activity_status}<span class={`status-pill ${hit.activity_status}`}>{statusLabels[hit.activity_status] ?? hit.activity_status}</span>{/if}</div>
+                <div class="search-hit-head"><strong>{hit.relative_path} · 第 {hit.line} 行</strong>{#if hit.match_origin}<span class="library-hit" class:source-hit={hit.match_origin === 'source'}>{searchOriginLabels[hit.match_origin]}</span>{/if}{#if hit.activity_status}<span class={`status-pill ${hit.activity_status}`}>{statusLabels[hit.activity_status] ?? hit.activity_status}</span>{/if}</div>
                 <span>{hit.snippet}</span>
                 <small>字节 {hit.start}–{hit.end} · 点击定位消息 · {hit.live_consistency ? `读取一致性：${liveConsistencyLabels[hit.live_consistency] ?? hit.live_consistency}` : hit.read_only ? '只读结果' : '状态未知'}</small>
               </button>
@@ -5328,7 +5713,12 @@
 
   <LibraryDrawer bind:open={conversationFiltersOpen} title="筛选会话" description="应用后更新列表，条件会保存在网址中。">
     <form class="library-filter-form" on:submit|preventDefault={applyConversationFilters}>
-      <label>正文搜索<input type="search" bind:value={filterDraft.search} placeholder="搜索对话正文" /></label>
+      <div class="library-filter-search">
+        <label>正文搜索<input type="search" bind:value={filterDraft.search} placeholder="搜索对话正文" /></label>
+        <SearchScopeControl value={parseSearchScope(filterDraft.searchScope)} helpID="filter-search-help"
+          helpDetail={searchCoverageText} onHelpOpen={loadSearchCoverage}
+          onChange={searchScope => filterDraft = { ...filterDraft, searchScope }} />
+      </div>
       <label>标题与元数据<input bind:value={filterDraft.query} placeholder="标题、首条消息、路径或 ID" /></label>
       <label>工作目录<input bind:value={filterDraft.cwd} placeholder="完整路径或目录关键词" /></label>
       <label>模型<input bind:value={filterDraft.model} placeholder="模型或提供方" /></label>
@@ -5344,7 +5734,7 @@
     {#if executionTask?.state === 'running'}<ExecutionProgress task={executionTask} message={executionMessage} on:stop={() => executionTask && stopExecutionTask(executionTask)} on:refresh={loadExecutionTasks} />{/if}
     {#if executionResult}<div class="operation-outcome" role="status"><span>{executionResultLabel(executionResult)}</span><button type="button" class="library-text-button" on:click={() => selectWorkspaceView('pending')}>查看执行记录</button></div>{/if}
     {#if selectedConversationCount}
-    <OperationChoices options={operationOptions} trashOnly={lifecycleRestricted} realConversations={lifecycleRealConversations} bind:archivePassword={operationArchivePassword} summary={operationSummary(operationOptions)} writesEnabled={lifecycleWritesEnabled} on:optionchange={(event) => setOperationOption(event.detail.option, event.detail.checked)} on:invalidate={invalidateOperationPreview} />
+    <OperationChoices sourceReadOnly={sourcePolicy === 'readonly'} options={operationOptions} trashOnly={lifecycleRestricted} realConversations={lifecycleRealConversations} bind:archivePassword={operationArchivePassword} summary={operationSummary(operationOptions)} writesEnabled={lifecycleWritesEnabled} on:optionchange={(event) => setOperationOption(event.detail.option, event.detail.checked)} on:invalidate={invalidateOperationPreview} />
     {/if}
         <div class="batch-toolbar">
         {#if selectedConversationCount || batchOperationPreview}
@@ -5361,7 +5751,7 @@
         <div class="batch-selection-meta">已载入的所选会话 tokens：{formatTokens(selectedConversationTokenTotal)} · 选择可跨筛选保留，执行前必须重新预览</div>
         {#if selectionStorageError}<p class="evidence-note" role="status">浏览器未能保存选择；当前选择仍可使用，但刷新可能丢失。</p>{/if}
         {#if selectionCopyMessage}<p class="evidence-note" role="status">{selectionCopyMessage}</p>{/if}
-        {#if selectedConversationCount}<details class="batch-evidence batch-selected-list"><summary>核对所选会话标识（{selectedConversationCount}）</summary>{#each Array.from(selectedConversationIDs) as id}{@const item = conversations.find((conversation) => conversation.id === id) || latestBatchReview?.preview.items.find((conversation) => conversation.conversation_id === id)}<div><span>{item?.title || '尚未载入会话'}</span><code>{item?.source_id || id}</code></div>{/each}</details>{/if}
+        {#if selectedConversationCount}<details class="batch-evidence batch-selected-list"><summary>核对所选会话标识（{selectedConversationCount}）</summary>{#each Array.from(selectedConversationIDs) as id}{@const item = knownConversations.get(id) || latestBatchReview?.preview.items.find((conversation) => conversation.conversation_id === id)}<div><span>{item?.title || '尚未载入会话'}</span><code>{item?.source_id || id}</code></div>{/each}</details>{/if}
         {#if batchOperationMessage}<div class:batch-message-blocked={Boolean(batchOperationPreview?.blocked || executionMessage && batchOperationMessage === executionMessage)} class="batch-operation-message" role="status">{batchOperationMessage}</div>{/if}
         {#if batchOperationPreview}
           <div bind:this={batchImpactPanel} class:batch-preview-blocked={batchOperationPreview.blocked} class="batch-preview-panel">
@@ -5386,7 +5776,7 @@
                     <strong title={item.conversation_id}>{item.automatically_included ? '自动纳入 · ' : ''}{item.thread_kind === 'subagent' && !item.title?.startsWith('子代理') ? '子代理 · ' : ''}{item.title || item.conversation_id}</strong>
                   </div>
                   {#if item.error && !batchSharedError}<p class="batch-item-error">{impactBlockerMessage(item.error)}</p>{/if}
-                  <OperationImpact sourceID={item.source_id || item.conversation_id} files={item.plan?.assets || []} discoveredFiles={item.discovered_assets || []} preview={batchOperationPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={item.plan?.status === 'prepared' && !item.blocked} completed={item.completed || false} {formatBytes} />
+                  <OperationImpact sourceID={item.source_id || item.conversation_id} files={item.plan?.assets || []} discoveredFiles={item.discovered_assets || []} preview={batchOperationPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={item.plan?.status === 'prepared' && !item.blocked} completed={item.completed || false} blocked={item.blocked} {formatBytes} />
                   <details class="batch-evidence operation-technical">
                     <summary>技术详情</summary>
                     <div><span>会话 ID</span><code>{item.source_id || item.conversation_id}</code></div>
@@ -5406,6 +5796,7 @@
           </div>
         {/if}
         {/if}
+        {#if impactNeedsRefresh(batchOperationMessage) || impactNeedsRefresh(batchOperationPreview?.error || '') || batchOperationPreview?.items.some(item => impactNeedsRefresh(item.error || ''))}<button type="button" class="secondary-button" disabled={loading || batchOperationLoading || batchOperationExecuting} on:click={refreshImpactLibrary}>刷新并重新选择</button>{/if}
         {#if summaryMessage}<div class="summary-message">{summaryMessage}</div>{/if}
         {#if summaryTask}
           <div class="summary-task-panel">
@@ -5424,7 +5815,7 @@
       <div class="library-review-identity"><strong title={selectedConversation.title || '未命名对话'}>{selectedConversation.title || '未命名对话'}</strong><code>{selectedConversation.source_id || selectedConversation.id}</code><span class={`status-pill ${selectedConversation.status}`}>{statusLabels[selectedConversation.status] ?? selectedConversation.status}</span></div>
       {#if selectedConversation.parent_thread_id}<p class="operation-space-note">仅处理当前子代理及其后代，保留父会话和兄弟线程。</p>{/if}
       {#if executionTask?.state === 'running'}<ExecutionProgress task={executionTask} message={executionMessage} on:stop={() => executionTask && stopExecutionTask(executionTask)} on:refresh={loadExecutionTasks} />{/if}
-      <OperationChoices options={operationOptions} trashOnly={lifecycleRestricted} realConversations={lifecycleRealConversations} bind:archivePassword={operationArchivePassword} summary={operationSummary(operationOptions)} writesEnabled={lifecycleWritesEnabled} on:optionchange={(event) => setOperationOption(event.detail.option, event.detail.checked)} on:invalidate={invalidateOperationPreview} />
+      <OperationChoices sourceReadOnly={sourcePolicy === 'readonly'} options={operationOptions} trashOnly={lifecycleRestricted} realConversations={lifecycleRealConversations} bind:archivePassword={operationArchivePassword} summary={operationSummary(operationOptions)} writesEnabled={lifecycleWritesEnabled} on:optionchange={(event) => setOperationOption(event.detail.option, event.detail.checked)} on:invalidate={invalidateOperationPreview} />
       <div class="library-review-actions"><button type="button" class="secondary-button" on:click={stageCurrentOperation} disabled={pendingBusy !== ''}>{pendingBusy ? '保存中…' : '暂存操作'}</button></div>
           {#if impactPreview}
             <div bind:this={singleImpactPanel} class="impact-panel">
@@ -5433,8 +5824,8 @@
               {#if impactPreview.blocked}<p class="batch-item-error">{impactBlockerMessage(impactPreview.error || '当前计划无法执行，请查看技术详情。')}</p>{/if}
               {#if impactPreview.items && impactPreview.items.length > 1}
                 <p class="operation-space-note">本次共 {impactPreview.items.length} 个线程，包含 {impactPreview.items.filter(item => item.automatically_included).length} 个自动纳入的子代理。以下全部对象将一并处理。</p>
-                {#each reviewFamilyItems(impactPreview.items) as item}<details class="family-impact" open><summary>{item.automatically_included ? '自动纳入 · ' : ''}{item.thread_kind === 'subagent' && !item.title?.startsWith('子代理') ? '子代理 · ' : ''}{item.title || '未命名对话'}</summary><OperationImpact sourceID={item.source_id || item.conversation_id} files={item.plan?.assets || []} preview={impactPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={item.plan?.status === 'prepared' && !item.blocked} {formatBytes} /></details>{/each}
-              {:else}<OperationImpact sourceID={selectedConversation.source_id || selectedConversation.id} files={impactPreview.plan?.assets || []} preview={impactPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={impactPreview.plan?.status === 'prepared' && !impactPreview.blocked} {formatBytes} />{/if}
+                {#each reviewFamilyItems(impactPreview.items) as item}<details class="family-impact" open><summary>{item.automatically_included ? '自动纳入 · ' : ''}{item.thread_kind === 'subagent' && !item.title?.startsWith('子代理') ? '子代理 · ' : ''}{item.title || '未命名对话'}</summary><OperationImpact sourceID={item.source_id || item.conversation_id} files={item.plan?.assets || []} preview={impactPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={item.plan?.status === 'prepared' && !item.blocked} blocked={item.blocked} {formatBytes} /></details>{/each}
+              {:else}<OperationImpact sourceID={selectedConversation.source_id || selectedConversation.id} files={impactPreview.plan?.assets || []} preview={impactPreview.restricted_preview} action={operationSummary(operationOptions)} prepared={impactPreview.plan?.status === 'prepared' && !impactPreview.blocked} blocked={impactPreview.blocked} {formatBytes} />{/if}
               {#if impactPreview.restricted_preview}<p class="operation-space-note">{impactPreview.restricted_preview.trash_package ? '目标数据将汇入一个回收文件夹，成功后清理临时备份。清空回收站前仍占磁盘空间；共享数据库不会自动缩小。' : operationOptions.trash ? '回收站内容仍占磁盘空间；共享数据库不会自动缩小。' : '清理记录不会自动缩小共享数据库。'}</p>{/if}
               <details class="batch-evidence operation-technical" bind:open={singleTechnicalOpen}>
                 <summary>技术详情与恢复位置</summary>
@@ -5452,6 +5843,7 @@
             </div>
           {/if}
           {#if operationMessage}<div class:operation-message-blocked={Boolean(impactPreview?.blocked || executionMessage && operationMessage === executionMessage)} class="operation-message" role="status">{operationMessage}</div>{/if}
+          {#if impactNeedsRefresh(impactPreview?.error || operationMessage)}<button type="button" class="secondary-button" disabled={loading || previewLoading || operationExecuting} on:click={refreshImpactLibrary}>刷新并重新选择</button>{/if}
 
     {/if}
     <OperationWorkflow destructive={operationOptions.trash || operationOptions.permanent_delete} slot="footer" count={impactPreview?.items?.length || (selectedConversation ? 1 : 0)} selected={operationChosen} selectionError={operationSelectionError} previewed={Boolean(impactPreview)} blocked={Boolean(impactPreview?.blocked)} ready={operationExecutable} loading={previewLoading} confirming={executionBusy || destinationBusy} running={operationExecuting} writesEnabled={lifecycleWritesEnabled} needsPassword={operationOptions.encrypted && !operationArchivePassword.trim()} message={impactPreview?.blocked ? '请处理上方原因后重新检查，也可以先暂存操作。' : operationMessage} on:preview={loadImpactPreview} on:confirm={executeOperation} />

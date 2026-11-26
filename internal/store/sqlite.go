@@ -12,13 +12,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"codex-chronicle.local/internal/application"
 	"codex-chronicle.local/internal/catalog"
-	"codex-chronicle.local/internal/searchtext"
 	"codex-chronicle.local/internal/sqliteguard"
 	_ "modernc.org/sqlite"
 
@@ -48,6 +45,7 @@ type Store struct {
 	db              *sql.DB
 	path            string
 	migrationBackup *MigrationBackup
+	index           *searchIndex
 }
 
 // SyncResult 是一次 inventory 派生同步的技术结果。
@@ -104,13 +102,17 @@ func OpenWithOptions(ctx context.Context, path string, options OpenOptions) (*St
 		storedPath, _ = filepath.Abs(path)
 	}
 	store := &Store{db: database, path: filepath.Clean(storedPath)}
-	if existing && !options.DisableMigrationBackup {
+	resetSearchIndex := false
+	if existing {
 		version, known, versionErr := readMigrationVersion(ctx, database)
 		if versionErr != nil {
 			_ = database.Close()
 			return nil, versionErr
 		}
 		if known && version < currentSchemaVersion {
+			resetSearchIndex = true
+		}
+		if resetSearchIndex && !options.DisableMigrationBackup {
 			backupRoot := strings.TrimSpace(options.MigrationBackupRoot)
 			if backupRoot == "" {
 				backupRoot = DefaultMigrationBackupRoot(store.path)
@@ -143,6 +145,17 @@ func OpenWithOptions(ctx context.Context, path string, options OpenOptions) (*St
 			return nil, fmt.Errorf("archive.db 迁移失败，已自动恢复迁移前备份（备份 %s）：%w", store.migrationBackup.Path, err)
 		}
 		return nil, err
+	}
+	if err := store.openSearchIndex(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("打开独立搜索索引失败: %w", err)
+	}
+	if resetSearchIndex {
+		// 旧控制面迁移会重建 frame/search 投影；独立加速库不能继续使用旧游标。
+		if err := store.resetSearchIndex(ctx); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("重置旧搜索索引失败: %w", err)
+		}
 	}
 	return store, nil
 }
@@ -182,6 +195,13 @@ func (s *Store) Path() string {
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if s.index != nil {
+		s.index.mu.Lock()
+		defer s.index.mu.Unlock()
+		_ = s.index.db.Close()
+		s.index.encoder.Close()
+		s.index.decoder.Close()
 	}
 	return s.db.Close()
 }
@@ -304,6 +324,15 @@ func (s *Store) AssetCount(ctx context.Context) (int, error) {
 
 // SyncInventory 将只读扫描结果写入独立控制面，不修改报告中的源文件。
 func (s *Store) SyncInventory(ctx context.Context, report domain.InventoryReport) (SyncResult, error) {
+	return s.syncInventory(ctx, report, true)
+}
+
+// SyncInventoryWithoutSearch 更新目录与阅读定位，搜索由独立后台任务处理。
+func (s *Store) SyncInventoryWithoutSearch(ctx context.Context, report domain.InventoryReport) (SyncResult, error) {
+	return s.syncInventory(ctx, report, false)
+}
+
+func (s *Store) syncInventory(ctx context.Context, report domain.InventoryReport, allowSearch bool) (SyncResult, error) {
 	if !report.ReadOnly {
 		return SyncResult{}, fmt.Errorf("拒绝同步非只读 inventory")
 	}
@@ -473,6 +502,39 @@ func (s *Store) SyncInventory(ctx context.Context, report domain.InventoryReport
 		return SyncResult{}, fmt.Errorf("提交 inventory 事务失败: %w", err)
 	}
 	committed = true
+	// 目录同步与搜索构建分开；清理或暂停搜索数据不会破坏阅读定位游标。
+	if len(report.Errors) == 0 {
+		paths, err := s.indexSourcePaths(ctx, report.Root)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		allowed := make(map[string]bool)
+		for _, file := range report.Files {
+			if file.Kind == domain.AssetKindJSONL {
+				allowed[file.RelativePath] = true
+			}
+		}
+		var removed []string
+		for _, path := range paths {
+			if !allowed[path] {
+				removed = append(removed, path)
+			}
+		}
+		if len(removed) > 0 {
+			if err := s.RemoveSearchFiles(ctx, report.Root, removed); err != nil {
+				return SyncResult{}, err
+			}
+		}
+	}
+	settings, err := s.SearchIndexSettings(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	if allowSearch && settings.Automatic {
+		if _, err := s.BuildSearchIndex(ctx, report, nil); err != nil {
+			return SyncResult{}, err
+		}
+	}
 	return SyncResult{
 		WorkspaceID: workspaceID, RunID: runID, FileCount: len(report.Files), ConversationCount: len(report.Conversations),
 		ErrorCount: len(report.Errors), ProjectionReused: projectionReused, ProjectionRebuilt: projectionRebuilt,
@@ -480,14 +542,21 @@ func (s *Store) SyncInventory(ctx context.Context, report domain.InventoryReport
 	}, nil
 }
 
-// HasSearchIndex 判断指定工作区是否已经有可用的派生搜索定位记录。
+// HasSearchIndex 判断指定工作区是否有覆盖通用内容的索引。
 func (s *Store) HasSearchIndex(ctx context.Context, root string) (bool, error) {
-	workspaceID := stableID("workspace", root)
-	var exists int
-	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM search_locations WHERE workspace_id = ?)", workspaceID).Scan(&exists); err != nil {
-		return false, err
-	}
-	return exists == 1, nil
+	scope, err := s.SearchIndexScope(ctx, root)
+	return scope == "all", err
+}
+
+// SearchIndexScope 区分通用索引、自选内容索引和无可用索引。
+func (s *Store) SearchIndexScope(ctx context.Context, root string) (string, error) {
+	var scope string
+	err := s.index.db.QueryRowContext(ctx, `SELECT CASE
+		WHEN desired<>built OR user_version<>? OR NOT EXISTS(SELECT 1 FROM files WHERE root=? AND committed>0) THEN ''
+		WHEN built='' THEN 'all'
+		ELSE 'selected'
+		END FROM content_scope,pragma_user_version WHERE id=1`, searchProjectionVersion, root).Scan(&scope)
+	return scope, err
 }
 
 // RemoveConversationDerived 在物理删除已提交后事务化移除本项目保存的对话派生数据。
@@ -562,92 +631,31 @@ func (s *Store) RemoveConversationDerived(ctx context.Context, root, conversatio
 		return fmt.Errorf("提交对话派生数据清理失败: %w", err)
 	}
 	committed = true
-	return nil
+	// 依据仍存在的目录记录移除搜索残留；原始文件和共享资产不在此操作范围内。
+	paths, err := s.indexSourcePaths(ctx, root)
+	if err != nil {
+		return err
+	}
+	var removed []string
+	for _, path := range paths {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM assets WHERE workspace_id=? AND relative_path=?)", workspaceID, path).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			removed = append(removed, path)
+		}
+	}
+	return s.RemoveSearchFiles(ctx, root, removed)
 }
 
-// Search 在 archive.db 的 FTS5 中查询已投影的 JSONL 内容，并返回原始行定位。
+// Search 使用当前目录库限定搜索范围；未建立加速索引时仍可按需读取源文件。
 func (s *Store) Search(ctx context.Context, root, query string, limit int) ([]domain.SearchHit, error) {
-	normalizedQuery := searchtext.Normalize(query)
-	if normalizedQuery == "" {
-		return nil, fmt.Errorf("搜索关键词不能为空")
-	}
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	workspaceID := stableID("workspace", root)
-	indexed, err := s.HasSearchIndex(ctx, root)
+	files, err := s.IndexFilesFromCatalog(ctx, root)
 	if err != nil {
-		return nil, fmt.Errorf("检查搜索索引失败: %w", err)
+		return nil, err
 	}
-	rawQuery := strings.TrimSpace(query)
-	needsNormalizedFallback := normalizedQuery != rawQuery
-	match := `"` + strings.ReplaceAll(normalizedQuery, `"`, `""`) + `"`
-	likeQuery := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(rawQuery)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT loc.conversation_id, loc.source_path, loc.line, loc.start_offset, loc.end_offset, loc.snippet, loc.top_type, asset.status
-		FROM search_documents AS doc
-		JOIN search_locations AS loc ON loc.doc_id = doc.asset_id
-		JOIN assets AS asset ON asset.id = loc.asset_id
-		WHERE asset.workspace_id = ? AND doc MATCH ?
-		ORDER BY loc.source_path, loc.line
-		LIMIT ?`, workspaceID, match, limit)
-	hits := make([]domain.SearchHit, 0, limit)
-	if err == nil {
-		hits, err = scanSearchRows(rows, limit)
-	} else {
-		hits = nil
-	}
-	if err != nil || len(hits) == 0 {
-		rows, likeErr := s.db.QueryContext(ctx, `
-			SELECT loc.conversation_id, loc.source_path, loc.line, loc.start_offset, loc.end_offset, loc.snippet, loc.top_type, asset.status
-			FROM search_locations AS loc
-			JOIN assets AS asset ON asset.id = loc.asset_id
-			WHERE asset.workspace_id = ? AND loc.snippet LIKE '%' || ? || '%' ESCAPE '\'
-			ORDER BY loc.source_path, loc.line
-			LIMIT ?`, workspaceID, likeQuery, limit)
-		if likeErr != nil {
-			return nil, fmt.Errorf("执行 FTS5/LIKE 搜索失败: %w", likeErr)
-		}
-		hits, err = scanSearchRows(rows, limit)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("读取搜索结果失败: %w", err)
-	}
-	if indexed && needsNormalizedFallback && len(hits) == 0 {
-		// FTS5 的默认 tokenizer 对 CJK 短语和部分规范化文本召回不足；
-		// 回退到同一只读根目录上的 framing 搜索，仍返回原始行范围证据。
-		fallback, fallbackErr := application.SearchJSONL(ctx, root, query, limit)
-		if fallbackErr == nil {
-			return fallback, nil
-		}
-	}
-	return hits, nil
-}
-
-func scanSearchRows(rows *sql.Rows, limit int) ([]domain.SearchHit, error) {
-	defer rows.Close()
-	hits := make([]domain.SearchHit, 0, limit)
-	for rows.Next() {
-		var hit domain.SearchHit
-		if err := rows.Scan(&hit.ConversationID, &hit.RelativePath, &hit.Line, &hit.StartOffset, &hit.EndOffset, &hit.Snippet, &hit.TopLevelType, &hit.SourceStatus); err != nil {
-			return nil, fmt.Errorf("读取搜索结果失败: %w", err)
-		}
-		hit.ReadOnly = true
-		hits = append(hits, hit)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历搜索结果失败: %w", err)
-	}
-	return hits, nil
-}
-
-type projectionState struct {
-	exists  bool
-	size    int64
-	modTime int64
-	status  string
-	hash    string
-	indexed bool
+	return s.SearchWithFiles(ctx, root, query, limit, files)
 }
 
 type jsonlSyncMode string
@@ -711,14 +719,10 @@ func (s *Store) syncJSONLIncremental(ctx context.Context, tx *sql.Tx, workspaceI
 	startLine := uint64(0)
 	mode := jsonlSyncRebuilt
 	if hasPrior {
-		indexed, indexErr := jsonlAssetHasSearchProjection(ctx, tx, assetID)
-		if indexErr != nil {
-			return result, indexErr
-		}
 		if prior.ParserVersion == jsonlParserVersion && before.Size() == prior.ObservedSize &&
 			(strings.TrimSpace(sourceSHA256) == "" || sourceSHA256 == prior.SourceSHA256) {
 			currentPrefix, hashErr := hashJSONLPrefix(path, prior.Committed)
-			if indexed && hashErr == nil && currentPrefix == prior.PrefixSHA256 {
+			if hashErr == nil && currentPrefix == prior.PrefixSHA256 {
 				mode = jsonlSyncReused
 				result.framesReused = int(prior.LineCount)
 				result.mode = mode
@@ -727,7 +731,7 @@ func (s *Store) syncJSONLIncremental(ctx context.Context, tx *sql.Tx, workspaceI
 		}
 		if before.Size() >= prior.Committed && prior.Committed >= 0 && prior.ParserVersion == jsonlParserVersion {
 			currentPrefix, hashErr := hashJSONLPrefix(path, prior.Committed)
-			if hashErr == nil && currentPrefix == prior.PrefixSHA256 && (indexed || prior.Committed < before.Size()) {
+			if hashErr == nil && currentPrefix == prior.PrefixSHA256 {
 				mode = jsonlSyncIncremental
 				startOffset = prior.Committed
 				startLine = prior.LineCount
@@ -787,19 +791,7 @@ func (s *Store) syncJSONLIncremental(ctx context.Context, tx *sql.Tx, workspaceI
 			return fmt.Errorf("写入 JSONL frame %s:%d 失败: %w", file.RelativePath, line, err)
 		}
 		result.framesAdded++
-		if frame.ValidJSON && !frame.Pending {
-			rawText, indexedText, role := searchProjection(content, frame.TopLevelType)
-			if strings.TrimSpace(indexedText) != "" {
-				docID := stableID("doc", workspaceID+"\x00"+file.RelativePath+"\x00"+strconv.FormatUint(line, 10))
-				conversationID := file.Rollout.ConversationID
-				if _, err := tx.ExecContext(ctx, `INSERT INTO search_documents(asset_id, source_path, role, content) VALUES(?, ?, ?, ?)`, docID, file.RelativePath, role, indexedText); err != nil {
-					return fmt.Errorf("写入增量搜索文档 %s:%d 失败: %w", file.RelativePath, line, err)
-				}
-				if _, err := tx.ExecContext(ctx, `INSERT INTO search_locations(doc_id, workspace_id, asset_id, conversation_id, source_path, line, start_offset, end_offset, top_type, snippet) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, docID, workspaceID, assetID, nullableString(conversationID), file.RelativePath, line, start, end, frame.TopLevelType, limitSearchText(rawText)); err != nil {
-					return fmt.Errorf("写入增量搜索定位 %s:%d 失败: %w", file.RelativePath, line, err)
-				}
-			}
-		}
+
 		committedOffset = end
 		committedLine = line
 		return nil
@@ -853,14 +845,6 @@ func (s *Store) syncJSONLIncremental(ctx context.Context, tx *sql.Tx, workspaceI
 	return result, nil
 }
 
-func jsonlAssetHasSearchProjection(ctx context.Context, tx *sql.Tx, assetID string) (bool, error) {
-	var indexed int
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM search_locations WHERE asset_id = ?)", assetID).Scan(&indexed); err != nil {
-		return false, fmt.Errorf("检查 JSONL 搜索投影失败: %w", err)
-	}
-	return indexed != 0, nil
-}
-
 func readJSONLCursor(ctx context.Context, tx *sql.Tx, assetID string) (jsonlCursor, bool, error) {
 	var cursor jsonlCursor
 	var pending int
@@ -906,79 +890,6 @@ func persistentJSONLIdentity(info os.FileInfo) string {
 	// Go 的 FileInfo 没有跨平台统一 inode 字段；前缀哈希承担内容一致性校验，
 	// 这里保存模式和名称作为诊断信息，不把它当作唯一安全凭据。
 	return fmt.Sprintf("%s:%s", info.Mode().String(), info.Name())
-}
-
-func (s projectionState) canReuse(file domain.FileInventory, contentSHA256 string) bool {
-	if !s.exists || file.JSONL == nil || strings.TrimSpace(contentSHA256) == "" {
-		return false
-	}
-	if s.size != file.SizeBytes || s.modTime != file.ModTime.UnixNano() || s.status != string(file.Status) || s.hash != contentSHA256 {
-		return false
-	}
-	if file.Status == domain.StatusStable && !s.indexed {
-		return false
-	}
-	return true
-}
-
-func (s *Store) readProjectionState(ctx context.Context, tx *sql.Tx, assetID string) (projectionState, error) {
-	var state projectionState
-	var status, hash string
-	var indexed int
-	err := tx.QueryRowContext(ctx, `
-		SELECT size_bytes, mod_time_ns, status, COALESCE(content_sha256, ''),
-		       EXISTS(SELECT 1 FROM search_locations WHERE asset_id = ?)
-		FROM assets WHERE id = ?`, assetID, assetID).Scan(&state.size, &state.modTime, &status, &hash, &indexed)
-	if err == sql.ErrNoRows {
-		return state, nil
-	}
-	if err != nil {
-		return state, fmt.Errorf("读取资产搜索投影状态失败: %w", err)
-	}
-	state.exists = true
-	state.status = status
-	state.hash = hash
-	state.indexed = indexed != 0
-	return state, nil
-}
-
-func (s *Store) syncSearchDocuments(ctx context.Context, tx *sql.Tx, workspaceID, root string, file domain.FileInventory) error {
-	assetID := stableID("asset", workspaceID+"\x00"+file.RelativePath)
-	if err := deleteSearchProjection(ctx, tx, assetID); err != nil {
-		return err
-	}
-	if file.Kind != domain.AssetKindJSONL || file.Status != domain.StatusStable || file.Rollout == nil {
-		return nil
-	}
-	path := filepath.Join(root, filepath.FromSlash(file.RelativePath))
-	_, err := catalog.ScanPathContent(path, func(frame domain.JSONLFrame, content []byte) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !frame.ValidJSON || frame.Pending {
-			return nil
-		}
-		rawText, indexedText, role := searchProjection(content, frame.TopLevelType)
-		if strings.TrimSpace(indexedText) == "" {
-			return nil
-		}
-		docID := stableID("doc", workspaceID+"\x00"+file.RelativePath+"\x00"+strconv.FormatUint(frame.LineNumber, 10))
-		conversationID := ""
-		if file.Rollout != nil {
-			conversationID = file.Rollout.ConversationID
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO search_documents(asset_id, source_path, role, content) VALUES(?, ?, ?, ?)`, docID, file.RelativePath, role, indexedText); err != nil {
-			return fmt.Errorf("写入搜索文档 %s 失败: %w", file.RelativePath, err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO search_locations(doc_id, workspace_id, asset_id, conversation_id, source_path, line, start_offset, end_offset, top_type, snippet) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, docID, workspaceID, assetID, nullableString(conversationID), file.RelativePath, frame.LineNumber, frame.StartOffset, frame.EndOffset, frame.TopLevelType, limitSearchText(rawText)); err != nil {
-			return fmt.Errorf("写入搜索定位 %s 失败: %w", file.RelativePath, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("建立搜索投影 %s 失败: %w", file.RelativePath, err)
-	}
-	return nil
 }
 
 func deleteSearchProjection(ctx context.Context, tx *sql.Tx, assetID string) error {
@@ -1034,65 +945,6 @@ func (s *Store) reconcileMissingAssets(ctx context.Context, tx *sql.Tx, workspac
 		}
 	}
 	return nil
-}
-
-func searchProjection(content []byte, topType string) (string, string, string) {
-	var value any
-	if err := json.Unmarshal(content, &value); err != nil {
-		return topType, searchtext.Normalize(topType), "event"
-	}
-	role := "event"
-	if record, ok := value.(map[string]any); ok {
-		if payload, ok := record["payload"].(map[string]any); ok {
-			if text, ok := payload["role"].(string); ok && text != "" {
-				role = text
-			}
-			if payloadType, ok := payload["type"].(string); ok && role == "event" {
-				role = payloadType
-			}
-		}
-	}
-	rawText := limitSearchText(topType + " " + collectSearchStrings(value, 0))
-	return rawText, searchtext.Normalize(rawText), role
-}
-
-func collectSearchStrings(value any, depth int) string {
-	if depth > 8 {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := collectSearchStrings(item, depth+1); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, " ")
-	case map[string]any:
-		parts := make([]string, 0, len(typed))
-		for key, item := range typed {
-			if key == "encrypted_content" || key == "base_instructions" || key == "input_schema" {
-				continue
-			}
-			if text := collectSearchStrings(item, depth+1); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, " ")
-	default:
-		return ""
-	}
-}
-
-func limitSearchText(value string) string {
-	value = strings.TrimSpace(value)
-	if len([]byte(value)) <= 16384 {
-		return value
-	}
-	return string([]byte(value)[:16384])
 }
 
 func (s *Store) configure(ctx context.Context, path string) error {

@@ -56,42 +56,75 @@ type Manifest struct {
 
 // Plan 是绑定 bundle 清单和安装根的持久化更新计划。
 type Plan struct {
-	ID              string    `json:"id"`
-	BundleRoot      string    `json:"bundle_root"`
-	InstallRoot     string    `json:"install_root"`
-	Version         string    `json:"version"`
-	PreviousVersion string    `json:"previous_version,omitempty"`
-	ManifestSHA256  string    `json:"manifest_sha256"`
-	FileCount       int       `json:"file_count"`
-	TotalBytes      int64     `json:"total_bytes"`
-	AllowDowngrade  bool      `json:"allow_downgrade"`
-	CreatedAt       time.Time `json:"created_at"`
-	Manifest        Manifest  `json:"manifest"`
+	ID              string        `json:"id"`
+	BundleRoot      string        `json:"bundle_root"`
+	DownloadPath    string        `json:"download_path,omitempty"`
+	InstallRoot     string        `json:"install_root"`
+	Version         string        `json:"version"`
+	PreviousVersion string        `json:"previous_version,omitempty"`
+	ManifestSHA256  string        `json:"manifest_sha256"`
+	FileCount       int           `json:"file_count"`
+	TotalBytes      int64         `json:"total_bytes"`
+	AllowDowngrade  bool          `json:"allow_downgrade"`
+	Automatic       bool          `json:"automatic,omitempty"`
+	Online          *OnlineSource `json:"online,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	Manifest        Manifest      `json:"manifest"`
 }
 
 // State 是安装根的当前版本指针；它通过原子替换写入，不依赖软链接。
 type State struct {
-	ActiveVersion   string    `json:"active_version,omitempty"`
-	PreviousVersion string    `json:"previous_version,omitempty"`
-	LastOperationID string    `json:"last_operation_id,omitempty"`
-	LastStatus      string    `json:"last_status,omitempty"`
-	LastError       string    `json:"last_error,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	InstalledVersion string        `json:"installed_version,omitempty"`
+	ActiveVersion    string        `json:"active_version,omitempty"`
+	PreviousVersion  string        `json:"previous_version,omitempty"`
+	LastOperationID  string        `json:"last_operation_id,omitempty"`
+	LastStatus       string        `json:"last_status,omitempty"`
+	LastError        string        `json:"last_error,omitempty"`
+	ConfirmedAt      *time.Time    `json:"confirmed_at,omitempty"`
+	CleanupAfter     *time.Time    `json:"cleanup_after,omitempty"`
+	RejectedVersion  string        `json:"rejected_version,omitempty"`
+	DeferredVersion  string        `json:"deferred_version,omitempty"`
+	Online           *OnlineSource `json:"online,omitempty"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
 // Status 是 UI/API 可展示的安装状态。
 type Status struct {
-	InstallRoot       string   `json:"install_root"`
-	State             State    `json:"state"`
-	Versions          []string `json:"versions"`
-	PendingPlanIDs    []string `json:"pending_plan_ids,omitempty"`
-	RecoveryRequired  bool     `json:"recovery_required"`
-	RecoveryMessage   string   `json:"recovery_message,omitempty"`
-	ReadOnlySource    bool     `json:"read_only_source"`
-	SignatureRequired bool     `json:"signature_required"`
-	TrustedKeyCount   int      `json:"trusted_key_count"`
-	OnlineConfigured  bool     `json:"online_configured"`
-	OnlineFeedURL     string   `json:"online_feed_url,omitempty"`
+	InstallRoot       string            `json:"install_root"`
+	State             State             `json:"state"`
+	Versions          []string          `json:"versions"`
+	PendingPlanIDs    []string          `json:"pending_plan_ids,omitempty"`
+	RecoveryRequired  bool              `json:"recovery_required"`
+	RecoveryMessage   string            `json:"recovery_message,omitempty"`
+	ReadOnlySource    bool              `json:"read_only_source"`
+	SignatureRequired bool              `json:"signature_required"`
+	TrustedKeyCount   int               `json:"trusted_key_count"`
+	OnlineConfigured  bool              `json:"online_configured"`
+	OnlineFeedURL     string            `json:"online_feed_url,omitempty"`
+	OnlineProxyURL    string            `json:"online_proxy_url,omitempty"`
+	LastCleanup       *CleanupResult    `json:"last_cleanup,omitempty"`
+	Automatic         AutomaticStatus   `json:"automatic"`
+	Download          *DownloadProgress `json:"download,omitempty"`
+}
+
+// SetOnlineProxy 更新并持久化仅供在线更新使用的代理地址。
+func (m *Manager) SetOnlineProxy(proxyURL string) error {
+	if m == nil {
+		return errors.New("更新管理器未初始化")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	config := m.online
+	config.ProxyURL = strings.TrimSpace(proxyURL)
+	validated, err := normalizeOnlineConfig(config)
+	if err != nil {
+		return err
+	}
+	if err := saveOnlineProxy(filepath.Join(m.root, "online-proxy.json"), validated.ProxyURL); err != nil {
+		return fmt.Errorf("保存在线更新代理失败：%w", err)
+	}
+	m.online = validated
+	return nil
 }
 
 // Result 是一次版本切换或回滚的可验证结果。
@@ -116,6 +149,8 @@ type Manager struct {
 	trustedPublicKeys [][]byte
 	requireSignature  bool
 	online            OnlineConfig
+	diskSpaceCheck    func(string, int64, string) error
+	downloadProgress  *DownloadProgress
 	registerArtifact  func(context.Context, maintenance.ArtifactManifest) (maintenance.ArtifactManifest, error)
 }
 
@@ -130,7 +165,7 @@ func NewManagerWithOptions(root string, options ManagerOptions) (*Manager, error
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range []string{VersionDir, PlanDirName, BundlesDirName} {
+	for _, name := range []string{VersionDir, PlanDirName, BundlesDirName, partialDownloadsDir} {
 		path := filepath.Join(abs, name)
 		if err := ensureDirectory(path); err != nil {
 			return nil, fmt.Errorf("创建更新控制目录失败：%w", err)
@@ -149,6 +184,16 @@ func NewManagerWithOptions(root string, options ManagerOptions) (*Manager, error
 	online, err := normalizeOnlineConfig(options.Online)
 	if err != nil {
 		return nil, err
+	}
+	proxyPath := filepath.Join(abs, "online-proxy.json")
+	if storedProxy, loadErr := loadOnlineProxy(proxyPath); loadErr != nil {
+		return nil, loadErr
+	} else if storedProxy != nil {
+		online.ProxyURL = *storedProxy
+		online, err = normalizeOnlineConfig(online)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Manager{root: abs, trustedPublicKeys: keys, requireSignature: options.RequireSignature, online: online}, nil
 }
@@ -322,7 +367,7 @@ func (m *Manager) PreparePath(ctx context.Context, bundlePath string, allowDowng
 	if !info.Mode().IsRegular() {
 		return Plan{}, errors.New("离线 bundle 必须是目录或普通压缩文件")
 	}
-	return m.prepareArchiveLocked(ctx, abs, allowDowngrade)
+	return m.prepareArchiveLocked(ctx, abs, allowDowngrade, false, nil)
 }
 
 // PrepareArchive 解压并校验离线包，随后将解压目录绑定到持久化更新计划。
@@ -340,10 +385,17 @@ func (m *Manager) PrepareArchive(ctx context.Context, archivePath string, allowD
 	if err := m.recoverLocked(ctx); err != nil {
 		return Plan{}, err
 	}
-	return m.prepareArchiveLocked(ctx, archivePath, allowDowngrade)
+	return m.prepareArchiveLocked(ctx, archivePath, allowDowngrade, false, nil)
 }
 
-func (m *Manager) prepareArchiveLocked(ctx context.Context, archivePath string, allowDowngrade bool) (Plan, error) {
+func (m *Manager) prepareArchiveLocked(ctx context.Context, archivePath string, allowDowngrade, automatic bool, online *OnlineSource) (Plan, error) {
+	expanded, err := archiveExpandedBytes(ctx, archivePath, DefaultExtractionLimits)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err := m.requireDiskSpace(expanded, "解压更新包"); err != nil {
+		return Plan{}, err
+	}
 	id, err := newID("plan")
 	if err != nil {
 		return Plan{}, err
@@ -367,6 +419,11 @@ func (m *Manager) prepareArchiveLocked(ctx context.Context, archivePath string, 
 		return Plan{}, fmt.Errorf("保存解压后的离线 bundle 失败：%w", err)
 	}
 	plan.BundleRoot = finalRoot
+	plan.Automatic = automatic
+	plan.Online = online
+	if filepath.Dir(archivePath) == filepath.Join(m.root, BundlesDirName) && generatedName(filepath.Base(archivePath), "download-", ".archive") {
+		plan.DownloadPath = archivePath
+	}
 	if err := writeAtomicJSON(ctx, m.planPath(plan.ID), plan); err != nil {
 		_ = os.RemoveAll(finalRoot)
 		return Plan{}, fmt.Errorf("保存更新计划失败：%w", err)
@@ -475,6 +532,33 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 	if state.ActiveVersion == plan.Version {
 		return Result{}, fmt.Errorf("版本 %s 已经激活", plan.Version)
 	}
+	if err := m.requireDiskSpace(plan.TotalBytes, "复制新版本"); err != nil {
+		return Result{}, err
+	}
+	// 暂缓重启留下的未运行副本可在相同签名内容重新获准后替换，不能覆盖其他既有版本。
+	if state.DeferredVersion == plan.Version {
+		root := filepath.Join(m.root, VersionDir, safeVersionName(plan.Version))
+		if _, err := os.Lstat(root); err == nil {
+			_, digest, err := m.readAndValidateManifest(ctx, root)
+			if err != nil {
+				return Result{}, err
+			}
+			if digest != plan.ManifestSHA256 {
+				return Result{}, errors.New("暂缓版本内容已变化，拒绝替换")
+			}
+			id, err := newID("cleanup")
+			if err != nil {
+				return Result{}, err
+			}
+			retired := filepath.Join(m.root, VersionDir, "."+id)
+			if err := os.Rename(root, retired); err != nil {
+				return Result{}, err
+			}
+			_ = os.RemoveAll(retired)
+		} else if !os.IsNotExist(err) {
+			return Result{}, err
+		}
+	}
 	operationID, err := newID("update")
 	if err != nil {
 		return Result{}, err
@@ -544,6 +628,11 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 		m.recordFailure(ctx, journal, fmt.Errorf("候选版本健康检查失败：%w", err))
 		return Result{}, fmt.Errorf("候选版本健康检查失败：%w", err)
 	}
+	// 预检可能较久，发布方在此期间撤回版本时不能继续提交。
+	if err := authorizeOnlineSource(ctx, m.online, plan.Online); err != nil {
+		m.recordFailure(ctx, journal, err)
+		return Result{}, err
+	}
 	finalRoot := filepath.Join(versionsRoot, safeVersionName(plan.Version))
 	if _, err := os.Lstat(finalRoot); err == nil {
 		m.recordFailure(ctx, journal, fmt.Errorf("版本目录已存在：%s", plan.Version))
@@ -573,7 +662,7 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 		m.recordFailure(ctx, journal, err)
 		return Result{}, fmt.Errorf("更新发布 journal 失败：%w", err)
 	}
-	next := State{ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, RejectedVersion: state.RejectedVersion, Online: plan.Online, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		if m.registerArtifact == nil {
 			_ = os.RemoveAll(finalRoot)
@@ -583,10 +672,12 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 	}
 	// 当前版本指针已经原子提交；后续清理 journal 或登记失败不得再删除已激活版本。
 	committed = true
+	if err := os.Remove(m.planPath(plan.ID)); err != nil && !os.IsNotExist(err) {
+		return Result{}, fmt.Errorf("更新已提交，计划清理待恢复：%w", err)
+	}
 	if err := os.Remove(filepath.Join(m.root, JournalName)); err != nil && !os.IsNotExist(err) {
 		return Result{}, fmt.Errorf("清理更新 journal 失败：%w", err)
 	}
-	_ = os.Remove(m.planPath(plan.ID))
 	if m.registerArtifact != nil && stagingManifest.ArtifactID != "" {
 		stagingManifest.TargetPath = finalRoot
 		stagingManifest.State = "published"
@@ -637,7 +728,7 @@ func (m *Manager) Rollback(ctx context.Context, health HealthCheck) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	next := State{ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, RejectedVersion: state.ActiveVersion, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		return Result{}, fmt.Errorf("提交回滚状态失败：%w", err)
 	}
@@ -664,7 +755,20 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL}, nil
+	var cleanup CleanupResult
+	if data, err := os.ReadFile(filepath.Join(m.root, "last-cleanup.json")); err == nil {
+		_ = json.Unmarshal(data, &cleanup)
+	}
+	status := Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL, OnlineProxyURL: m.online.ProxyURL}
+	status.Automatic, err = m.automaticStatus()
+	status.Download = m.downloadProgress
+	if err != nil {
+		return Status{}, err
+	}
+	if !cleanup.CompletedAt.IsZero() {
+		status.LastCleanup = &cleanup
+	}
+	return status, nil
 }
 
 // VerifyVersionRoot 只读验证一个已发布版本目录的清单和全部文件摘要。
@@ -717,6 +821,16 @@ func (m *Manager) updateRegisteredArtifact(ctx context.Context, entry journal, t
 }
 
 func (m *Manager) validatePlanLocked(ctx context.Context, plan Plan) error {
+	persisted, err := m.LoadPlan(ctx, plan.ID)
+	if err != nil {
+		return err
+	}
+	if !onlineSourcesEqual(persisted.Online, plan.Online) || persisted.Automatic != plan.Automatic {
+		return errors.New("更新来源已变化，更新计划失效")
+	}
+	if plan.Automatic && plan.Online == nil {
+		return fmt.Errorf("%w：旧在线计划缺少来源记录，请重新准备更新", ErrOnlineReleaseWithdrawn)
+	}
 	manifest, digest, err := m.readAndValidateManifest(ctx, plan.BundleRoot)
 	if err != nil {
 		return err
@@ -804,6 +918,9 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 	if err := m.recoverDownloads(ctx); err != nil {
 		return err
 	}
+	if err := m.recoverBaselines(); err != nil {
+		return err
+	}
 	path := filepath.Join(m.root, JournalName)
 	var entry journal
 	if err := readJSON(path, &entry); err != nil {
@@ -838,6 +955,11 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 			if err := m.updateRegisteredArtifact(ctx, entry, finalRoot, "published", false, "已发布版本由更新管理器生命周期管理"); err != nil {
 				return err
 			}
+			if safeID(entry.PlanID) {
+				if err := os.Remove(m.planPath(entry.PlanID)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
 			_ = os.Remove(path)
 			return nil
 		}
@@ -858,6 +980,9 @@ func (m *Manager) recoverLocked(ctx context.Context) error {
 }
 
 func (m *Manager) recordFailure(ctx context.Context, entry journal, failure error) {
+	// 超时或退出取消的是安装尝试，补偿记录仍须落盘，避免后台持续运行时一直被自己的 journal 阻断。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	entry.Phase = "staging"
 	entry.Error = failure.Error()
 	entry.UpdatedAt = time.Now().UTC()
@@ -888,8 +1013,19 @@ func (m *Manager) readState() (State, error) {
 	if state.ActiveVersion != "" && !safeVersion(state.ActiveVersion) {
 		return State{}, errors.New("安装状态中的当前版本无效")
 	}
+	if state.InstalledVersion != "" && !safeVersion(state.InstalledVersion) {
+		return State{}, errors.New("安装状态中的基线版本无效")
+	}
 	if state.PreviousVersion != "" && !safeVersion(state.PreviousVersion) {
 		return State{}, errors.New("安装状态中的旧版本无效")
+	}
+	if state.DeferredVersion != "" && !safeVersion(state.DeferredVersion) {
+		return State{}, errors.New("安装状态中的暂缓版本无效")
+	}
+	if state.Online != nil {
+		if state.Online.Release.Version != state.ActiveVersion || validateOnlineRelease(state.Online.Release, 16<<30) != nil || validateOnlineURL(state.Online.FeedURL, "在线来源") != nil {
+			return State{}, errors.New("安装状态中的在线来源无效")
+		}
 	}
 	return state, nil
 }

@@ -28,6 +28,7 @@ func TestSyncReclassifiedJSONLRemovesLegacyConversationProjection(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	old, err := application.NewScanner().ScanWithoutGraphs(ctx, root)
 	if err != nil {
 		t.Fatal(err)

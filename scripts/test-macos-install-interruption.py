@@ -98,6 +98,9 @@ func main(){
                 assert len(values) == (2 if phase == "--activate" else 1), values
             expected_app = faulty if phase == "--activate" else old_app
             assert entry(target).read_bytes() == entry(expected_app).read_bytes(), "安装恢复选择了错误版本"
+            expected_version = run([entry(expected_app), "--version"]).strip()
+            state = json.loads((profile / "updates/install-state.json").read_text())["active_version"]
+            assert state == expected_version and recovered["version"] == expected_version, "安装恢复未同步恢复版本指针"
             assert hashlib.sha256((source / "sample.jsonl").read_bytes()).hexdigest() == original
             assert not (profile / ".install-in-progress").exists(), "恢复后仍有安装标记"
             assert not list(target.parent.glob(".chronicle-install-*")), "中断的工作目录未清理"

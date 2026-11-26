@@ -191,18 +191,26 @@ type ConversationSummary struct {
 }
 
 // SearchHit 定位一个原始 JSONL 行，供 UI 按需读取完整内容。
+type SearchMatchOrigin string
+
+const (
+	SearchMatchIndex  SearchMatchOrigin = "index"
+	SearchMatchSource SearchMatchOrigin = "source"
+)
+
 type SearchHit struct {
-	ConversationID  string      `json:"conversation_id,omitempty"`
-	RelativePath    string      `json:"relative_path"`
-	Line            uint64      `json:"line"`
-	StartOffset     int64       `json:"start"`
-	EndOffset       int64       `json:"end"`
-	Snippet         string      `json:"snippet"`
-	TopLevelType    string      `json:"top_type"`
-	SourceStatus    AssetStatus `json:"source_status,omitempty"`
-	ActivityStatus  AssetStatus `json:"activity_status,omitempty"`
-	LiveConsistency string      `json:"live_consistency,omitempty"`
-	ReadOnly        bool        `json:"read_only"`
+	ConversationID  string            `json:"conversation_id,omitempty"`
+	RelativePath    string            `json:"relative_path"`
+	Line            uint64            `json:"line"`
+	StartOffset     int64             `json:"start"`
+	EndOffset       int64             `json:"end"`
+	Snippet         string            `json:"snippet"`
+	TopLevelType    string            `json:"top_type"`
+	MatchOrigin     SearchMatchOrigin `json:"match_origin,omitempty"`
+	SourceStatus    AssetStatus       `json:"source_status,omitempty"`
+	ActivityStatus  AssetStatus       `json:"activity_status,omitempty"`
+	LiveConsistency string            `json:"live_consistency,omitempty"`
+	ReadOnly        bool              `json:"read_only"`
 }
 
 // SQLiteTableSummary 是 SQLite 表结构的只读摘要，不包含正文行。

@@ -13,6 +13,7 @@ func Normalize(value string) string {
 	value = strings.ReplaceAll(value, "\r", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
 	var builder strings.Builder
+	builder.Grow(len(value))
 	space := false
 	for _, character := range strings.ToLower(value) {
 		if unicode.IsSpace(character) {

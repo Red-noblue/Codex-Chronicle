@@ -51,3 +51,24 @@ func TestAnalyzeRolloutDistinguishesPendingAndCompleteInvalidLine(t *testing.T) 
 		t.Fatalf("complete malformed line must be unknown: scan=%+v projection=%+v", scan, projection)
 	}
 }
+
+func TestAnalyzeRolloutKeepsFirstSessionIdentityAcrossNestedForkHistory(t *testing.T) {
+	input := `{"type":"session_meta","payload":{"id":"current-fork","forked_from_id":"parent","cwd":"/current","cli_version":"0.171.0","source":"cli"}}
+{"type":"session_meta","payload":{"id":"parent","forked_from_id":"ancestor","session_id":"parent-session","thread_id":"parent-thread","cwd":"/parent","model_provider":"old-provider","cli_version":"0.100.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"unrelated-thread"}}}}}
+{"type":"session_meta","payload":{"id":"ancestor","cwd":"/ancestor","source":"cli"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"继承的用户提问"}]}}
+`
+	projection, scan, err := AnalyzeRollout(strings.NewReader(input), "sessions/current-fork.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.SourceID != "current-fork" || projection.ConversationID != StableConversationID("current-fork") {
+		t.Fatalf("fork 祖先覆盖了当前线程身份: %+v", projection)
+	}
+	if projection.CWD != "/current" || projection.CLIVersion != "0.171.0" || projection.ModelProvider != "" || projection.SessionID != "" || projection.ThreadID != "" || projection.ParentThreadID != "" || projection.ThreadKind == "subagent" {
+		t.Fatalf("fork 祖先的元数据污染了当前线程: %+v", projection)
+	}
+	if scan.LineCount != 4 || projection.EventCount != 4 || projection.UserMessages != 1 || projection.FirstUserText != "继承的用户提问" {
+		t.Fatalf("首条身份解析不应丢失继承的正文: scan=%+v projection=%+v", scan, projection)
+	}
+}

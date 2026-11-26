@@ -7,6 +7,7 @@
   export let archivePassword = '';
   export let summary: string;
   export let writesEnabled = false;
+  export let sourceReadOnly = false;
   const dispatch = createEventDispatcher<{ optionchange: { option: keyof typeof options; checked: boolean }; invalidate: void }>();
 </script>
 
@@ -15,8 +16,8 @@
   <div class="operation-options">
     <label class:disabled={trashOnly}><input type="checkbox" disabled={trashOnly} checked={options.archive} on:change={(event) => dispatch('optionchange', { option: 'archive', checked: event.currentTarget.checked })} />归档</label>
     <label class:disabled={trashOnly || !options.archive}><input type="checkbox" checked={options.encrypted} disabled={trashOnly || !options.archive} on:change={(event) => dispatch('optionchange', { option: 'encrypted', checked: event.currentTarget.checked })} />客户端加密</label>
-    <label><input type="checkbox" checked={options.trash} on:change={(event) => dispatch('optionchange', { option: 'trash', checked: event.currentTarget.checked })} />移入回收站</label>
-    <label class="danger-option"><input type="checkbox" disabled={trashOnly} checked={options.permanent_delete} on:change={(event) => dispatch('optionchange', { option: 'permanent_delete', checked: event.currentTarget.checked })} />删除</label>
+    <label class:disabled={sourceReadOnly}><input type="checkbox" disabled={sourceReadOnly} checked={options.trash} on:change={(event) => dispatch('optionchange', { option: 'trash', checked: event.currentTarget.checked })} />移入回收站</label>
+    <label class="danger-option"><input type="checkbox" disabled={trashOnly || sourceReadOnly} checked={options.permanent_delete} on:change={(event) => dispatch('optionchange', { option: 'permanent_delete', checked: event.currentTarget.checked })} />删除</label>
   </div>
   {#if options.archive}
     <fieldset class="archive-locations"><legend>归档保存位置</legend>
@@ -33,6 +34,7 @@
   {#if trashOnly}<p class="evidence-note">仅支持已授权会话移入废纸篓。</p>{/if}
   {#if realConversations}<details class="operation-scope"><summary>支持范围</summary><p class="evidence-note">归档包含正文、目标数据库行和索引记录。正在使用或关联检查未通过的会话不会处理。</p></details>{/if}
   {#if options.permanent_delete}<p class="evidence-note">删除 .codex 中的源文件和专属记录，跳过回收站。{options.archive ? '所选归档副本保留。' : '未选择归档，完成后无法撤销。'}</p>{/if}
+  {#if sourceReadOnly}<p class="evidence-note">已开启只读保护，无法删除原始记录。可在“数据格式兼容性”中调整。</p>{/if}
   {#if !writesEnabled}<p class="evidence-note">当前服务提供只读影响预览，实际执行受服务端权限限制。</p>{/if}
 </section>
 

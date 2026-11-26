@@ -21,7 +21,7 @@ import (
 const installMarker = ".install-in-progress"
 const appEntry = "Contents/MacOS/Codex Chronicle"
 
-var installProfileFiles = []string{"archive.db", "workspaces.json", "launcher.json", "auth.json", "trash-settings.json", "github-settings.json", "github-archive-selection.json"}
+var installProfileFiles = []string{"archive.db", "workspaces.json", "launcher.json", "auth.json", "trash-settings.json", "github-settings.json", "github-archive-selection.json", "updates/install-state.json"}
 
 type installJournal struct {
 	Format         int               `json:"format"`
@@ -157,6 +157,9 @@ func installMacApp(ctx context.Context, source, target, data string, output io.W
 	if err := Quit(ctx, data); err != nil {
 		return err
 	}
+	if err := WaitTrayExit(ctx, data); err != nil {
+		return err
+	}
 	fmt.Fprintln(output, "正在使用隔离副本检查新版本和项目数据库…")
 	if err := runInstallCommand(ctx, output, filepath.Join(source, appEntry), "--verify", "--data-dir", data); err != nil {
 		return err
@@ -234,6 +237,9 @@ func snapshotInstallProfile(journal *installJournal) error {
 		path := filepath.Join(journal.DataDir, name)
 		if _, err := os.Lstat(path); os.IsNotExist(err) {
 			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(backup, name)), 0o700); err != nil {
+			return err
 		}
 		digest, err := copyInstallFile(path, filepath.Join(backup, name))
 		if err != nil {
@@ -468,7 +474,7 @@ func writeInstallFile(path string, content []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return installRename(file.Name(), path)
+	return replaceInstallFile(file.Name(), path)
 }
 
 func copyInstallFile(source, target string) (string, error) {
@@ -498,7 +504,21 @@ func copyInstallFile(source, target string) (string, error) {
 	if closeErr != nil {
 		return "", closeErr
 	}
-	return hex.EncodeToString(hash.Sum(nil)), installRename(output.Name(), target)
+	return hex.EncodeToString(hash.Sum(nil)), replaceInstallFile(output.Name(), target)
+}
+
+// replaceInstallFile 供各平台更新快照使用；Windows 用原子替换与写穿，Unix 另同步目录。
+func replaceInstallFile(source, target string) error {
+	if err := replaceStartupFile(source, target); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if err := syncInstallDir(filepath.Dir(source)); err != nil {
+		return err
+	}
+	return syncInstallDir(filepath.Dir(target))
 }
 
 func installFileDigest(path string) (string, error) {

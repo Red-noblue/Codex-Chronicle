@@ -1,4 +1,4 @@
-// 中文说明：通过独立更新进程和真实 HTTP 流验证强杀后的半成品清理、活跃下载保护及版本切换中断恢复。
+// 中文说明：通过独立更新进程和真实 HTTP 流验证强杀后的片段保留、跨进程续传及版本切换中断恢复。
 package update
 
 import (
@@ -41,7 +41,13 @@ func TestOnlineDownloadProcessInterruption(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", fmt.Sprint(len(artifact)))
 		if healthy.Load() {
-			_, _ = w.Write(artifact)
+			if r.Header.Get("Range") != "bytes=1024-" {
+				t.Errorf("强杀恢复后没有请求续传：%s", r.Header.Get("Range"))
+			}
+			w.Header().Set("Content-Length", fmt.Sprint(len(artifact)-1024))
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 1024-%d/%d", len(artifact)-1, len(artifact)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(artifact[1024:])
 			return
 		}
 		_, _ = w.Write(artifact[:1024])
@@ -63,7 +69,7 @@ func TestOnlineDownloadProcessInterruption(t *testing.T) {
 	defer func() { _ = command.Process.Kill() }()
 	var temporary string
 	waitUpdateTest(t, func() bool {
-		paths, _ := filepath.Glob(filepath.Join(root, BundlesDirName, "*.tmp"))
+		paths, _ := filepath.Glob(filepath.Join(root, partialDownloadsDir, "*.part"))
 		for _, path := range paths {
 			if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 				temporary = path
@@ -85,9 +91,12 @@ func TestOnlineDownloadProcessInterruption(t *testing.T) {
 	if err := manager.Recover(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if info, err := os.Stat(temporary); err != nil || info.Size() != 1024 {
+		t.Fatalf("强杀后没有保留可续传片段：%v", err)
+	}
 	entries, err := os.ReadDir(filepath.Join(root, BundlesDirName))
 	if err != nil || len(entries) != 0 {
-		t.Fatalf("强杀后的半成品没有清理：%v %v", entries, err)
+		t.Fatalf("强杀后发布了未完成的安装包：%v %v", entries, err)
 	}
 	healthy.Store(true)
 	if _, err := manager.DownloadOnline(t.Context(), release); err != nil {

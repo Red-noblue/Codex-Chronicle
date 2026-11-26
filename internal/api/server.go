@@ -44,6 +44,8 @@ type Server struct {
 	drainMu                sync.Mutex
 	draining               bool
 	activeRequests         int
+	updateLastActivity     time.Time
+	updateAutomaticRestart func(context.Context, string) error
 	scanner                application.Scanner
 	root                   string
 	archive                *store.Store
@@ -69,6 +71,8 @@ type Server struct {
 	githubSettings         *githubSettingsState
 	cloudMu                sync.Mutex
 	cloud                  *cloudBackupState
+	archiveCatalogMu       sync.Mutex
+	archiveCatalogCache    map[string]archiveRemoteSnapshot
 	registry               compat.Registry
 	updatePackageCheck     updatepkg.HealthCheck
 	remoteDownloadMu       sync.Mutex
@@ -93,13 +97,24 @@ type Server struct {
 	pendingStores          map[string]*pendingpkg.Store
 	resourceMu             sync.RWMutex
 	resourceBudget         resourcepkg.Budget
+	indexTaskMu            sync.Mutex
+	indexTask              searchIndexTask
+	indexTaskCancel        context.CancelFunc
+	indexTaskDone          chan struct{}
 	trashSettings          *platform.TrashSettingsStore
 	trashSettingsErr       error
+	uiPreferencesMu        sync.Mutex
+	uiPreferencesPath      string
+	compatibilityMu        sync.Mutex
+	compatibilityPath      string
+	sourcePolicies         map[string]sourcePolicy
+	sourceChanges          map[string]int
 	trashProbeMu           sync.Mutex
 	authManager            *auth.Manager
 	copyTasks              *copypkg.Manager
 	liveCopyTasks          *copypkg.LiveManager
 	updater                *updatepkg.Manager
+	updateRestart          func(context.Context, string) error
 	recoveryMu             sync.RWMutex
 	recoveryCandidates     []operation.RecoveryCandidate
 	recoveryErrors         []string
@@ -177,6 +192,15 @@ func NewServerWithOptionsAndRegistry(root string, archive *store.Store, lifecycl
 func (s *Server) Close() {
 	if s == nil {
 		return
+	}
+	s.indexTaskMu.Lock()
+	if s.indexTaskCancel != nil {
+		s.indexTaskCancel()
+	}
+	done := s.indexTaskDone
+	s.indexTaskMu.Unlock()
+	if done != nil {
+		<-done
 	}
 	s.closeCloudBackups()
 	if s.cleanupCancel != nil {
@@ -257,6 +281,15 @@ func (s *Server) SetUpdatePackageCheck(check updatepkg.HealthCheck) {
 	s.updatePackageCheck = check
 }
 
+// SetUpdateRestart 仅由受桌面启动器管理的后台注入；手动运行的开发服务仍由部署者控制重启。
+func (s *Server) SetUpdateRestart(restart func(context.Context, string) error) {
+	s.updateRestart = restart
+}
+
+func (s *Server) SetAutomaticUpdateRestart(restart func(context.Context, string) error) {
+	s.updateAutomaticRestart = restart
+}
+
 // SetTrashSettingsStore 注入用户级回收站设置存储；应在 daemon 开始接受请求前调用。
 func (s *Server) SetTrashSettingsStore(settings *platform.TrashSettingsStore) {
 	if s == nil {
@@ -275,6 +308,9 @@ func (s *Server) resourceBudgetSnapshot() resourcepkg.Budget {
 func (s *Server) resourcePaths() resourcepkg.Paths {
 	workspace := s.currentWorkspace()
 	paths := resourcepkg.Paths{Persistent: []string{archivePath(workspace.Archive), s.workspaceRegistryPath()}}
+	if workspace.Archive != nil {
+		paths.Persistent = append(paths.Persistent, workspace.Archive.SearchIndexPath())
+	}
 	if archive := archivePath(workspace.Archive); archive != "" {
 		paths.Persistent = append(paths.Persistent, store.DefaultMigrationBackupRoot(archive))
 	}
@@ -527,10 +563,16 @@ func (s *Server) addWorkspace(ctx context.Context, definition workspacepkg.Defin
 }
 
 func (s *Server) removeWorkspace(ctx context.Context, id string) (workspacepkg.Definition, error) {
+	// 与索引任务使用同一锁顺序，避免工作区切换后将仍在构建的数据库关闭。
+	s.indexTaskMu.Lock()
+	defer s.indexTaskMu.Unlock()
 	s.workspaceMu.Lock()
 	defer s.workspaceMu.Unlock()
 	if s.workspaceStore == nil {
 		return workspacepkg.Definition{}, fmt.Errorf("尚未配置持久化工作区注册表")
+	}
+	if definition, ok := workspaceDefinition(s.workspaceReg, id); ok && s.indexTaskCancel != nil && definition.Root == s.indexTask.Root {
+		return workspacepkg.Definition{}, fmt.Errorf("该工作区仍有索引任务，请先停止或等待完成")
 	}
 	registry := cloneWorkspaceRegistry(s.workspaceReg)
 	item, err := workspacepkg.Remove(ctx, &registry, id)
@@ -603,15 +645,22 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
 	})
 	mux.HandleFunc("/api/v1/capabilities", s.capabilitiesHandler)
+	mux.HandleFunc("/api/v1/ui-preferences", s.uiPreferencesHandler)
+	mux.HandleFunc("/api/v1/compatibility", s.compatibilityHandler)
+	mux.HandleFunc("/api/v1/compatibility/detect", s.compatibilityHandler)
 	mux.HandleFunc("/api/v1/resources", s.resourcesHandler)
 	mux.HandleFunc("/api/v1/readiness", s.readinessHandler)
 	mux.HandleFunc("/api/v1/health/preflight", s.preflightHandler)
 	mux.HandleFunc("/api/v1/update/status", s.updateStatusHandler)
+	mux.HandleFunc("/api/v1/update/proxy", s.updateProxyHandler)
+	mux.HandleFunc("/api/v1/update/automatic", s.updateAutomaticHandler)
+	mux.HandleFunc("/api/v1/update/activity", s.updateActivityHandler)
 	mux.HandleFunc("/api/v1/update/check", s.updateCheckHandler)
 	mux.HandleFunc("/api/v1/update/download", s.updateDownloadHandler)
 	mux.HandleFunc("/api/v1/update/prepare-online", s.updatePrepareOnlineHandler)
 	mux.HandleFunc("/api/v1/update/prepare", s.updatePrepareHandler)
 	mux.HandleFunc("/api/v1/update/activate", s.updateActivateHandler)
+	mux.HandleFunc("/api/v1/update/restart", s.updateRestartHandler)
 	mux.HandleFunc("/api/v1/update/rollback", s.updateRollbackHandler)
 	mux.HandleFunc("/api/v1/auth/status", s.authStatusHandler)
 	mux.HandleFunc("/api/v1/auth/bind", s.authBindHandler)
@@ -691,11 +740,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/live-copies", s.liveCopyHandler)
 	mux.HandleFunc("/api/v1/live-copies/", s.liveCopyTaskHandler)
 	mux.HandleFunc("/api/v1/catalog/sync", s.catalogSyncHandler)
+	mux.HandleFunc("/api/v1/search-index", s.searchIndexHandler)
+	mux.HandleFunc("/api/v1/search-index/", s.searchIndexHandler)
 	mux.HandleFunc("/api/v1/source-range", s.sourceRangeHandler)
 	if s.authManager != nil {
-		return s.drainMiddleware(s.authMiddleware(s.remoteConfigurationGuard(mux)))
+		return s.drainMiddleware(s.authMiddleware(s.remoteConfigurationGuard(s.sourcePolicyMiddleware(mux))))
 	}
-	return s.drainMiddleware(s.remoteConfigurationGuard(mux))
+	return s.drainMiddleware(s.remoteConfigurationGuard(s.sourcePolicyMiddleware(mux)))
 }
 
 func healthHandler(writer http.ResponseWriter, _ *http.Request) {
@@ -729,14 +780,20 @@ func (s *Server) capabilitiesHandler(writer http.ResponseWriter, request *http.R
 	realEnabled := s.lifecycle != nil && s.lifecycle.AuthorizedLive != nil && s.executionAllowed(s.currentRoot())
 	allConversations := realEnabled && s.lifecycle.AuthorizedLive.AllConversations
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"api_version":                   "v1",
-		"read_only":                     !(s.lifecycleWriteEnabled() || allConversations),
-		"write_enabled":                 s.lifecycleWriteEnabled() || allConversations,
-		"fixture_only":                  s.lifecycle != nil && s.lifecycle.FixtureOnly,
-		"confirmed_execution":           true,
-		"execution_batch_size":          executionBatchSize,
-		"restricted_real_execution":     map[string]any{"enabled": realEnabled && !allConversations, "allowed_source_ids": authorizedlive.AllowedIDs(), "actions": []string{"trash"}},
-		"real_conversation_execution":   map[string]any{"enabled": allConversations, "scope": "selected_idle_conversations", "actions": []string{"trash", "permanent_delete"}, "platform": "macOS", "daemon_versions": []string{"0.166.0", "0.167.0", "0.167.2", "0.169.0"}, "schema_versions": []string{"0.166", "0.167"}, "requires_preview_and_confirmation": true},
+		"api_version":               "v1",
+		"source_policy":             s.sourcePolicyFor(s.currentRoot()).Mode,
+		"read_only":                 !(s.lifecycleWriteEnabled() || allConversations),
+		"write_enabled":             s.lifecycleWriteEnabled() || allConversations,
+		"fixture_only":              s.lifecycle != nil && s.lifecycle.FixtureOnly,
+		"confirmed_execution":       true,
+		"execution_batch_size":      executionBatchSize,
+		"restricted_real_execution": map[string]any{"enabled": realEnabled && !allConversations, "allowed_source_ids": authorizedlive.AllowedIDs(), "actions": []string{"trash"}},
+		"real_conversation_execution": map[string]any{
+			"enabled": allConversations, "scope": "selected_idle_conversations",
+			"actions": []string{"trash", "permanent_delete"}, "platform": "macOS",
+			"daemon_compatibility": "protocol_checked", "requires_known_schema": true,
+			"schema_versions": []string{"0.166", "0.167", "0.171"}, "requires_preview_and_confirmation": true,
+		},
 		"remote_archive_configured":     remoteConfigured,
 		"remote_archive_recovery":       s.githubArchiveRecovery() != nil,
 		"remote_archive_delete":         s.githubArchiveDeletion() != nil,
@@ -1996,114 +2053,6 @@ func (s *Server) conversationEventsHandler(writer http.ResponseWriter, request *
 		"pending_jsonl_lines": pendingLines, "invalid_json_lines": invalidJSONLines, "source_changed_during_read": sourceChanged,
 		"snapshot_status": report.snapshot.Metadata.Status, "stale": report.snapshot.Metadata.Stale,
 	})
-}
-
-func (s *Server) searchHandler(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet {
-		writeError(writer, http.StatusMethodNotAllowed, "只支持 GET")
-		return
-	}
-	workspace := s.currentWorkspace()
-	root := workspace.Definition.Root
-	archive := workspace.Archive
-	if strings.TrimSpace(root) == "" {
-		writeError(writer, http.StatusServiceUnavailable, "尚未配置只读扫描根目录")
-		return
-	}
-	query := strings.TrimSpace(request.URL.Query().Get("q"))
-	limit, err := parseOptionalPositiveInt(request.URL.Query().Get("limit"), 100, 500)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	technicalSearch := request.URL.Query().Get("scope") == "technical"
-	candidateLimit := limit
-	if !technicalSearch {
-		candidateLimit = 500
-	}
-	var hits []domain.SearchHit
-	searchMode := "live_scan"
-	indexStale := false
-	var searchSnapshot application.InventorySnapshot
-	if archive != nil {
-		freshSnapshot, snapshotErr := s.tasks.ReadReport(request.Context(), root, application.ScanOptions{}, true)
-		if snapshotErr == nil {
-			searchSnapshot = freshSnapshot
-			indexStale = freshSnapshot.Metadata.Stale
-		}
-		indexed, indexErr := archive.HasSearchIndex(request.Context(), root)
-		if indexErr != nil {
-			writeError(writer, http.StatusInternalServerError, indexErr.Error())
-			return
-		}
-		if indexed && !indexStale {
-			hits, err = archive.Search(request.Context(), root, query, candidateLimit)
-			searchMode = "archive_fts"
-		} else {
-			hits, err = s.searchFromSnapshot(request.Context(), root, query, candidateLimit)
-		}
-	} else {
-		hits, err = s.searchFromSnapshot(request.Context(), root, query, candidateLimit)
-	}
-	// 旧版索引可能包含输入历史或插件样本；以当前识别结果复核，不能占用会话搜索的候选名额。
-	if err == nil && searchMode == "archive_fts" && searchSnapshot.Report.Root == root {
-		allowed := make(map[string]bool)
-		for _, file := range searchSnapshot.Report.Files {
-			if file.Rollout != nil {
-				allowed[file.RelativePath] = true
-			}
-		}
-		filtered := make([]domain.SearchHit, 0, len(hits))
-		for _, hit := range hits {
-			if allowed[hit.RelativePath] {
-				filtered = append(filtered, hit)
-			}
-		}
-		if len(filtered) < len(hits) && len(hits) == candidateLimit {
-			hits, err = s.searchFromSnapshot(request.Context(), root, query, candidateLimit)
-			searchMode = "live_scan"
-		} else {
-			hits = filtered
-		}
-	}
-	candidateLimitReached := len(hits) == candidateLimit
-	if err == nil && !technicalSearch {
-		hits, err = s.effectiveSearchHits(request.Context(), root, query, hits, limit)
-	}
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	for index := range hits {
-		hits[index].ReadOnly = true
-		if hits[index].SourceStatus == "" {
-			hits[index].SourceStatus = domain.StatusUnknown
-		}
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"read_only": true, "mode": copypkg.LiveRead, "search_mode": searchMode, "index_stale": indexStale,
-		"snapshot_status": searchSnapshot.Metadata.Status, "snapshot_generated_at": searchSnapshot.Report.GeneratedAt,
-		"query": query, "hits": hits, "count": len(hits),
-		"history_scope": map[bool]string{true: "technical", false: "effective"}[technicalSearch], "candidate_limit_reached": candidateLimitReached,
-	})
-}
-
-func (s *Server) searchFromSnapshot(ctx context.Context, root, query string, limit int) ([]domain.SearchHit, error) {
-	snapshot, err := s.tasks.ReadReport(ctx, root, application.ScanOptions{}, true)
-	if err != nil {
-		return nil, err
-	}
-	if snapshot.Metadata.Stale {
-		// 源目录在快照后发生变化时回退到实时目录发现，避免漏掉刚生成的 rollout。
-		return application.SearchJSONL(ctx, root, query, limit)
-	}
-	paths := make([]string, 0)
-	for _, file := range snapshot.Report.Files {
-		if file.Kind == domain.AssetKindJSONL && file.Rollout != nil {
-			paths = append(paths, file.RelativePath)
-		}
-	}
-	return application.SearchJSONLFiles(ctx, root, paths, query, limit)
 }
 
 type operationPreviewRequest struct {

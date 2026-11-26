@@ -2,13 +2,16 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,6 +19,95 @@ import (
 	"codex-chronicle.local/internal/reader"
 	"codex-chronicle.local/internal/store"
 )
+
+func TestSearchStreamScopesBeforeLimitAndReturnsUnloadedConversations(t *testing.T) {
+	root := t.TempDir()
+	write := func(id, cwd, stamp string, count int) {
+		t.Helper()
+		header := fmt.Sprintf("{\"timestamp\":%q,\"type\":\"session_meta\",\"payload\":{\"id\":%q,\"cwd\":%q}}\n", stamp, id, cwd)
+		row := fmt.Sprintf("{\"timestamp\":%q,\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"共同关键词\"}}\n", stamp)
+		if err := os.WriteFile(filepath.Join(root, "rollout-"+id+".jsonl"), []byte(header+strings.Repeat(row, count)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a", "/projects/unrelated", "2026-10-02T00:00:00Z", 170)
+	write("z", "/projects/target", "2026-10-01T00:00:00Z", 2)
+	db, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := NewServerWithStore(root, db)
+	defer server.Close()
+	handler := server.Handler()
+	endpoint := "/api/v1/search?limit=3&conversation_cwd=target&q=" + url.QueryEscape("共同关键词")
+	var expected []domain.SearchHit
+	for _, mode := range []string{"live_scan", "archive_fts"} {
+		if mode == "archive_fts" {
+			indexRequest(t, handler, http.MethodPost, "/build", map[string]string{"root": root})
+			if state := awaitIndex(t, handler); state.Task.Status != "completed" || state.Index.IndexedFiles != 2 {
+				t.Fatalf("构建失败：%+v", state)
+			}
+		}
+		stream := apiJSON(t, handler, http.MethodGet, endpoint+"&stream=1", "")
+		if stream.Code != http.StatusOK || !stream.Flushed || !strings.Contains(stream.Header().Get("Content-Type"), "application/x-ndjson") {
+			t.Fatalf("流式响应未启用：%d %v", stream.Code, stream.Header())
+		}
+		decoder := json.NewDecoder(bytes.NewReader(stream.Body.Bytes()))
+		var events []searchStreamEvent
+		for {
+			var event searchStreamEvent
+			if err := decoder.Decode(&event); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+		}
+		if len(events) < 4 || events[0].Type != "catalog" || events[1].Type != "search" || events[1].FilesTotal != 1 ||
+			events[len(events)-1].Type != "done" || events[len(events)-1].Limited {
+			t.Fatalf("进度或搜索范围错误：%s", stream.Body)
+		}
+		var hits []domain.SearchHit
+		var items []domain.ConversationSummary
+		for _, event := range events {
+			hits = append(hits, event.Hits...)
+			items = append(items, event.Items...)
+		}
+		if len(hits) != 2 || len(items) != 1 || items[0].SourceID != "z" || hits[0].ConversationID != items[0].ID ||
+			hits[0].Line != 2 || hits[1].Line != 3 {
+			t.Fatalf("未正确返回待阅读会话和字节命中：%s", stream.Body)
+		}
+		var body struct {
+			Mode string             `json:"search_mode"`
+			Hits []domain.SearchHit `json:"hits"`
+		}
+		if result := apiJSON(t, handler, http.MethodGet, endpoint, ""); result.Code != http.StatusOK ||
+			json.Unmarshal(result.Body.Bytes(), &body) != nil || body.Mode != mode || !reflect.DeepEqual(body.Hits, hits) {
+			t.Fatalf("普通响应与流式响应不一致：%s", result.Body)
+		}
+		for i := range hits {
+			wantOrigin := domain.SearchMatchSource
+			if mode == "archive_fts" {
+				wantOrigin = domain.SearchMatchIndex
+			}
+			if hits[i].MatchOrigin != wantOrigin {
+				t.Fatalf("搜索方式 %s 的命中来源错误：%+v", mode, hits[i])
+			}
+			hits[i].LiveConsistency, hits[i].SourceStatus, hits[i].ActivityStatus = "", "", ""
+			hits[i].MatchOrigin = ""
+		}
+		if expected == nil {
+			expected = hits
+		} else if !reflect.DeepEqual(expected, hits) {
+			t.Fatalf("建立索引改变了命中或定位：%v != %v", expected, hits)
+		}
+	}
+	list := apiJSON(t, handler, http.MethodGet, "/api/v1/conversations?limit=1", "")
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), expected[0].ConversationID) {
+		t.Fatalf("样本目标应在首个列表页之外：%s", list.Body)
+	}
+}
 
 func TestReaderAPIUsesSourceAnchorsAndSearchesBeyondPreview(t *testing.T) {
 	root := t.TempDir()
@@ -127,6 +219,58 @@ func TestGlobalEffectiveSearchRetainsDistinctIdenticalMessages(t *testing.T) {
 				t.Fatalf("distinct repeated messages collapsed: %d %s", rr.Code, rr.Body)
 			}
 		})
+	}
+}
+
+func TestGlobalSearchOnFreshInstallAndPastRejectedCandidates(t *testing.T) {
+	root := t.TempDir()
+	name := filepath.Join(root, "rollout-fresh-search.jsonl")
+	data := "{\"type\":\"session_meta\",\"payload\":{\"id\":\"first-search\"}}\n" +
+		strings.Repeat("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"text\":\"needle 同样的测试词\"}]}}\n", 510) +
+		"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"" +
+		strings.Repeat("长", 6000) + "needle 跨片\"},{\"text\":\"段命中\"}]}}\n"
+	if err := os.WriteFile(name, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := NewServerWithStore(root, db)
+	defer server.Close()
+	handler := server.Handler()
+	for _, mode := range []string{"live_scan", "archive_fts"} {
+		if mode == "archive_fts" {
+			indexRequest(t, handler, http.MethodPost, "/build", map[string]string{"root": root})
+			if state := awaitIndex(t, handler); state.Task.Status != "completed" || state.Index.IndexedFiles != 1 {
+				t.Fatalf("构建失败：%+v", state)
+			}
+		}
+		for _, query := range []string{"needle", "跨片段命中"} {
+			response := apiJSON(t, handler, http.MethodGet, "/api/v1/search?limit=5&q="+url.QueryEscape(query), "")
+			var body struct {
+				Mode   string             `json:"search_mode"`
+				Hits   []domain.SearchHit `json:"hits"`
+				Capped bool               `json:"candidate_limit_reached"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Mode != mode || body.Capped || len(body.Hits) != 1 || body.Hits[0].Line != 512 || !strings.Contains(body.Hits[0].Snippet, query) {
+				t.Fatalf("查询 %q 未能跳过已隐藏的候选：%s", query, response.Body)
+			}
+		}
+	}
+	response := apiJSON(t, handler, http.MethodGet, "/api/v1/search?scope=technical&limit=5&q="+url.QueryEscape(`"role":"developer"`), "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"count":5`) {
+		t.Fatalf("技术搜索未匹配原始 JSON 字段：%s", response.Body)
+	}
+	newSource := "{\"type\":\"session_meta\",\"payload\":{\"id\":\"another-search\"}}\n" +
+		"{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"刚加入目录可搜\"}}\n"
+	if err := os.WriteFile(filepath.Join(root, "rollout-new.jsonl"), []byte(newSource), 0600); err != nil {
+		t.Fatal(err)
+	}
+	response = apiJSON(t, handler, http.MethodGet, "/api/v1/search?q="+url.QueryEscape("刚加入目录可搜"), "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"count":1`) || !strings.Contains(response.Body.String(), `"relative_path":"rollout-new.jsonl"`) {
+		t.Fatalf("新会话未进入搜索范围：%s", response.Body)
 	}
 }
 
@@ -272,5 +416,57 @@ func TestReaderEffectiveHistoryFilesAndTechnicalEvidence(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if string(after) != data {
 		t.Fatal("source changed")
+	}
+}
+
+func TestSearchVerifiesRollbackAppendedBeyondIndex(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rollout-live.jsonl")
+	prefix := []byte("{\"type\":\"session_meta\",\"payload\":{\"id\":\"live-prefix\"}}\n" +
+		"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"prefixwithdrawnword\"}]}}\n")
+	if err := os.WriteFile(path, prefix, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(t.Context(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewServerWithStore(root, db)
+	defer s.Close()
+	h := s.Handler()
+	indexRequest(t, h, http.MethodPost, "/build", map[string]string{"root": root})
+	if state := awaitIndex(t, h); state.Index.IndexedFiles != 1 {
+		t.Fatalf("应先完整索引旧版本：%+v", state)
+	}
+	addition := "{\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_rolled_back\",\"num_turns\":1}}\n" +
+		"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"prefixvisibleword\"}]}}\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString(addition)
+	if closeErr := f.Close(); closeErr != nil || err != nil {
+		t.Fatal(err, closeErr)
+	}
+	response := apiJSON(t, h, http.MethodGet, "/api/v1/search?q=prefix&stream=1", "")
+	decoder := json.NewDecoder(response.Body)
+	var hits []domain.SearchHit
+	var end searchStreamEvent
+	for {
+		var event searchStreamEvent
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil || event.Type == "error" {
+			t.Fatalf("搜索失败：%+v %v", event, err)
+		}
+		hits = append(hits, event.Hits...)
+		end = event
+	}
+	if len(hits) != 1 || hits[0].Snippet != "prefixvisibleword" || hits[0].Line != 4 || hits[0].StartOffset <= int64(len(prefix)) {
+		t.Fatalf("普通搜索应隐去被撤回的前缀命中，并保留原文后缀定位：%+v", hits)
+	}
+	if end.Type != "done" || end.PrefixBytes == nil || *end.PrefixBytes != int64(len(prefix))+1 {
+		t.Fatalf("查询应使用经复核的旧版本前缀：%+v", end)
 	}
 }

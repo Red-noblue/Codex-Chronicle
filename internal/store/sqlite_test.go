@@ -14,6 +14,14 @@ import (
 	"codex-chronicle.local/internal/domain"
 )
 
+// enableSearchIndex 显式启用测试工作区的自动搜索构建，避免测试依赖新安装的默认设置。
+func enableSearchIndex(t *testing.T, archive *Store) {
+	t.Helper()
+	if err := archive.SetSearchIndexSettings(t.Context(), SearchIndexSettings{BudgetBytes: DefaultSearchIndexBudget, Automatic: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenMigratesControlPlaneAndSupportsFTS5(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "archive.db")
@@ -22,6 +30,7 @@ func TestOpenMigratesControlPlaneAndSupportsFTS5(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	version, err := archive.SchemaVersion(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +175,7 @@ func TestSyncInventoryWritesDerivedDataOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	modTime := time.Unix(123, 456).UTC()
 	report := domain.InventoryReport{
 		SchemaVersion: 1,
@@ -209,6 +219,7 @@ func TestSyncInventoryPersistsConversationGraphProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	report := domain.InventoryReport{
 		SchemaVersion: 1, Root: "/tmp/conversation-root", ReadOnly: true,
 		GeneratedAt: time.Unix(200, 0).UTC(),
@@ -271,6 +282,7 @@ func TestSyncInventoryBuildsFTSLocationsAndSearches(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	firstSync, err := archive.SyncInventory(ctx, report)
 	if err != nil {
 		t.Fatal(err)
@@ -318,6 +330,7 @@ func TestSyncInventoryIncrementallyAppendsAndRebuildsJSONLFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	initial, err := archive.SyncInventory(ctx, report)
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +422,7 @@ func TestSyncInventoryKeepsActiveJSONLTailOutOfCommittedFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	first, err := archive.SyncInventory(ctx, report)
 	if err != nil {
 		t.Fatal(err)
@@ -473,6 +487,7 @@ func TestSearchUsesSharedWhitespaceNormalizationForCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	if _, err := archive.SyncInventory(ctx, report); err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +518,7 @@ func TestSearchProjectionMigrationRebuildsWithSharedNormalization(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableSearchIndex(t, archive)
 	if _, err := archive.SyncInventory(ctx, report); err != nil {
 		_ = archive.Close()
 		t.Fatal(err)
@@ -553,6 +569,7 @@ func TestSearchLocationAssetIndexMigrationPreservesProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	enableSearchIndex(t, archive)
 	if _, err := archive.SyncInventory(ctx, report); err != nil {
 		_ = archive.Close()
 		t.Fatal(err)
@@ -621,6 +638,7 @@ func TestSyncInventoryReconcilesRewrittenAndRemovedAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	if _, err := archive.SyncInventory(ctx, report); err != nil {
 		t.Fatal(err)
 	}
@@ -696,6 +714,7 @@ func TestRemoveConversationDerivedKeepsSharedAssetsUntilLastReference(t *testing
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	if _, err := archive.SyncInventory(ctx, report); err != nil {
 		t.Fatal(err)
 	}
@@ -762,6 +781,7 @@ func TestSyncInventorySkipsMissingRolloutForeignKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	result, err := archive.SyncInventory(ctx, report)
 	if err != nil {
 		t.Fatalf("missing rollout should remain a readable conflict: %v", err)
@@ -784,6 +804,7 @@ func TestSyncInventoryRejectsNonReadOnlyReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	enableSearchIndex(t, archive)
 	report := domain.InventoryReport{Root: "/tmp/source", ReadOnly: false}
 	if _, err := archive.SyncInventory(context.Background(), report); err == nil {
 		t.Fatal("expected non-read-only report to be rejected")

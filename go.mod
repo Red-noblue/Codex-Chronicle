@@ -3,6 +3,7 @@ module codex-chronicle.local
 go 1.26.0
 
 require (
+	github.com/godbus/dbus/v5 v5.2.0
 	github.com/klauspost/compress v1.20.4
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.0

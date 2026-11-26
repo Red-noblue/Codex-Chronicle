@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -19,25 +20,43 @@ import (
 
 var version = "0.0.0-dev"
 
+// updateFeedURL 由发布构建注入固定更新 feed；开发构建为空，不开启在线更新。
+var updateFeedURL = ""
+
 func main() {
 	dataDir := flag.String("data-dir", "", "用户数据目录；默认使用系统当前用户应用数据目录")
 	packageRoot := flag.String("package-root", "", "安装载荷目录；默认从可执行文件定位")
-	address := flag.String("address", "127.0.0.1:8787", "本机监听地址；端口冲突时安装版会选用空闲端口")
+	address := flag.String("address", "127.0.0.1:8787", "网页与 API 的统一本机地址；省略时自动避让冲突，显式指定时严格使用该地址")
 	scanRoot := flag.String("scan-root", "", "首次只读扫描目录；省略时自动发现用户 Codex 目录")
 	noBrowser := flag.Bool("no-browser", false, "启动后只输出地址，不打开浏览器或菜单栏")
+	background := flag.Bool("background", false, "登录自启动：显示菜单栏或托盘，不主动打开网页")
+	startupSettings := flag.Bool("startup-settings", false, "直接打开端口设置，无需后台成功启动")
 	status := flag.Bool("status", false, "核对并显示已有后台实例，不启动新进程")
 	quit := flag.Bool("quit", false, "等待任务完成并退出已有后台；不会强制终止")
 	verify := flag.Bool("verify", false, "使用空白隔离目录验证此安装包的启动、版本和安全退出")
 	startupCheck := flag.Bool("startup-check", false, "安装器专用：启动暂停接收操作的候选版本")
+	restartInstance := flag.String("restart-instance", "", "更新器专用：安全退出指定实例并重新打开应用")
+	restartVersion := flag.String("restart-version", "", "更新器专用：本次重新启动的已确认目标版本")
 	activate := flag.Bool("activate", false, "安装器专用：核对版本后开放已通过检查的后台")
 	installApp := flag.String("install-app", "", "安装器专用：完整 macOS 应用来源")
 	installTarget := flag.String("install-target", "", "安装器专用：完整 macOS 应用目标")
 	printVersion := flag.Bool("version", false, "显示启动器版本")
 	flag.Parse()
+	autoPort := true
+	flag.Visit(func(option *flag.Flag) {
+		if option.Name == "address" {
+			autoPort = false
+		}
+	})
 	explicitDataDir := *dataDir
+	var executable string
 	fatal := func(err any) {
 		if !*noBrowser && !*status && !*quit && !*verify && !*startupCheck && !*activate && !*printVersion {
-			desktopui.ShowError(fmt.Sprint(err))
+			if executable != "" && *dataDir != "" {
+				desktopui.ShowStartupError(fmt.Sprint(err), executable, *dataDir, *packageRoot)
+			} else {
+				desktopui.ShowError(fmt.Sprint(err))
+			}
 		}
 		log.Fatal(err)
 	}
@@ -45,7 +64,8 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	executable, err := os.Executable()
+	var err error
+	executable, err = os.Executable()
 	if err != nil {
 		fatal(err)
 	}
@@ -57,6 +77,18 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
+	}
+	*dataDir, err = filepath.Abs(*dataDir)
+	if err != nil {
+		fatal(err)
+	}
+	*packageRoot, err = filepath.Abs(*packageRoot)
+	if err != nil {
+		fatal(err)
+	}
+	if *startupSettings {
+		desktopui.Settings(executable, *dataDir, *packageRoot)
+		return
 	}
 	if *verify {
 		if err := verifyPackage(*packageRoot, explicitDataDir); err != nil {
@@ -77,6 +109,16 @@ func main() {
 		if err := desktop.Quit(ctx, *dataDir); err != nil {
 			log.Fatal(err)
 		}
+		if err := desktop.WaitTrayExit(ctx, *dataDir); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *restartInstance != "" {
+		// 独立协作进程等待数据任务正常结束，不受原 HTTP 请求或旧后台退出影响。
+		if err := desktop.RestartAfterUpdate(context.Background(), desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version, UpdateFeedURL: updateFeedURL, NoBrowser: *noBrowser, Background: *background}, *restartInstance, *restartVersion); err != nil {
+			fatal(err)
+		}
 		return
 	}
 	if *activate {
@@ -90,13 +132,38 @@ func main() {
 		if err := instance.Activate(ctx); err != nil {
 			log.Fatal(err)
 		}
+		active, err := desktop.Running(ctx, *dataDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := active.CheckHealth(ctx); err != nil {
+			log.Fatal(err)
+		}
+		if err := desktop.ConfirmUpdateLaunch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, UpdateFeedURL: updateFeedURL}, active); err != nil {
+			log.Fatal(err)
+		}
 		return
+	}
+	if !*status && !*startupCheck {
+		launcher, root, err := desktop.UpdatedLauncher(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version, UpdateFeedURL: updateFeedURL})
+		if err != nil {
+			fatal(err)
+		}
+		if launcher != "" {
+			args := append(append([]string{}, os.Args[1:]...), "--package-root", root)
+			command := exec.Command(launcher, args...)
+			command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if err := command.Run(); err != nil {
+				fatal(err)
+			}
+			return
+		}
 	}
 	var instance desktop.Instance
 	if *status {
 		instance, err = desktop.Running(ctx, *dataDir)
 	} else {
-		instance, err = desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, Address: *address, ScanRoot: *scanRoot, StartupCheck: *startupCheck, ExpectedVersion: version})
+		instance, err = desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, Address: *address, AutoPort: autoPort, ScanRoot: *scanRoot, StartupCheck: *startupCheck, NoBrowser: *noBrowser, ExpectedVersion: version, UpdateFeedURL: updateFeedURL})
 	}
 	if err != nil {
 		fatal(err)
@@ -109,13 +176,15 @@ func main() {
 	instance.Token = ""
 	_ = json.NewEncoder(os.Stdout).Encode(instance)
 	if !*status && !*noBrowser {
-		if err := desktop.OpenBrowser(instance.URL); err != nil {
-			log.Printf("请在浏览器中打开 %s：%v", instance.URL, err)
+		if !*background {
+			if err := desktop.OpenBrowser(instance.URL); err != nil {
+				log.Printf("请在浏览器中打开 %s：%v", instance.URL, err)
+			}
 		}
-		if runtime.GOOS == "darwin" {
+		if runtime.GOOS == "darwin" || runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 			go watchBackend(*dataDir, instance.ID)
 		}
-		desktopui.Run(instance.URL, executable, *dataDir)
+		desktopui.Run(instance.URL, executable, *dataDir, *packageRoot)
 	}
 }
 
@@ -123,14 +192,24 @@ func main() {
 func watchBackend(dataDir, instanceID string) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	failures := 0
 	for range ticker.C {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		current, err := desktop.Running(ctx, dataDir)
 		cancel()
-		if err != nil || current.ID != instanceID {
-			desktopui.Stop()
-			return
+		if err != nil {
+			failures++
+			if failures < 3 {
+				continue
+			}
+		} else {
+			failures = 0
+			if current.ID == instanceID {
+				continue
+			}
 		}
+		desktopui.Stop()
+		return
 	}
 }
 
@@ -171,7 +250,7 @@ func verifyPackage(root, profile string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cleanup = false
-	instance, err := desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: root, DataDir: data, ScanRoot: source, Address: "127.0.0.1:0"})
+	instance, err := desktop.Launch(ctx, desktop.LaunchOptions{PackageRoot: root, DataDir: data, ScanRoot: source, Address: "127.0.0.1:0", ExpectedVersion: version})
 	if err != nil {
 		quitCtx, quitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer quitCancel()

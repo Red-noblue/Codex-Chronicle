@@ -9,6 +9,7 @@
   export let action: string;
   export let prepared = false;
   export let completed = false;
+  export let blocked = false;
   export let formatBytes: (value: number) => string;
 
   const tableLabels: Record<string, string> = {
@@ -24,13 +25,14 @@
   {#if impact.files.length}
     <p class="file-conclusion">{completed ? '计划文件' : prepared ? action : '待核对文件'}：<strong>{impact.files.length} 个文件</strong><span>{formatBytes(impact.fileBytes)}</span></p>
   {:else}
-    <p class="file-conclusion">尚未生成可执行的文件清单</p>
+    <p class="file-conclusion">{blocked ? '检查已停止，未生成执行清单' : '尚未生成可执行的文件清单'}</p>
   {/if}
   {#if preview}
     <p class="record-conclusion">{completed ? '计划清理' : '将清理'} <strong>{impact.rowCount} 条数据库记录</strong>{#if impact.textLineCount}<span>、{impact.textLineCount} 行索引 / 历史记录</span>{/if}</p>
   {:else if impact.sharedFiles.length}
     <p class="record-conclusion">发现共享文件，具体记录处理范围尚未确认。</p>
   {/if}
+  {#if impact.files.length || preview || discoveredFiles.length}
   <details class="impact-detail-list">
     <summary>查看文件与记录清单</summary>
     {#if impact.files.length}
@@ -59,6 +61,7 @@
       <div class="impact-group"><h4>扫描到的关联文件（不代表获准处理）</h4>{#each discoveredFiles as file}<div class="impact-file"><code>{file.relative_path}</code><span>{file.kind === 'sqlite' ? '共享数据库' : file.owners > 1 ? '多个会话共用' : formatBytes(file.size_bytes)}</span></div>{/each}</div>
     {/if}
   </details>
+  {/if}
 </section>
 
 <style>

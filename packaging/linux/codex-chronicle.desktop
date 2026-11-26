@@ -9,3 +9,12 @@ Icon=folder-documents
 Terminal=false
 Categories=Utility;Development;
 StartupNotify=false
+Actions=StartupSettings;Quit;
+
+[Desktop Action StartupSettings]
+Name=端口设置
+Exec=/usr/lib/codex-chronicle/bin/codex-chronicle-desktop --startup-settings
+
+[Desktop Action Quit]
+Name=安全退出后台
+Exec=/usr/lib/codex-chronicle/bin/codex-chronicle-desktop --quit
