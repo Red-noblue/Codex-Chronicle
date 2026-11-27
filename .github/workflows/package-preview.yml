@@ -24,6 +24,11 @@ on:
         description: 验证或公开时填写冻结候选清单的 SHA-256
         required: false
         type: string
+      immutable_releases_confirmed:
+        description: 发布操作者已核验仓库不可变设置；建议使用本机 dispatch-publish 自动派发
+        required: false
+        default: false
+        type: boolean
       release_notes:
         description: 构建候选时可指定仓库内已审核的说明文件；正式版必须指定
         required: false
@@ -385,6 +390,7 @@ jobs:
       CHRONICLE_VERSION: ${{ inputs.version }}
       CHRONICLE_SOURCE_RUN: ${{ inputs.candidate_run_id }}
       CHRONICLE_CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+      CHRONICLE_IMMUTABLE_RELEASES_CONFIRMED: ${{ inputs.immutable_releases_confirmed }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
