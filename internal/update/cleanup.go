@@ -1,4 +1,4 @@
-// 中文说明：实际新版本通过健康检查后保留 24 小时恢复窗口，到期再清理旧包和版本；不触碰外部离线包。
+// 中文说明：实际版本通过健康检查后按可调整的恢复窗口延迟清理，默认 24 小时；不触碰外部离线包。
 package update
 
 import (
@@ -22,6 +22,47 @@ type CleanupResult struct {
 }
 
 const CleanupGracePeriod = 24 * time.Hour
+const MaxCleanupRetentionMinutes = 30 * 24 * 60
+
+var ErrInvalidCleanupRetention = errors.New("旧版本保留时长必须为 1 至 43200 分钟")
+
+// SetCleanupRetention 原子保存保留时长和当前截止时间；只调整计划，由后台维护执行实际清理。
+func (m *Manager) SetCleanupRetention(ctx context.Context, minutes int) (err error) {
+	if m == nil {
+		return errors.New("更新管理器未初始化")
+	}
+	if minutes < 1 || minutes > MaxCleanupRetentionMinutes {
+		return ErrInvalidCleanupRetention
+	}
+	finish := BeginDiagnostic(m.root, "cleanup_settings", "")
+	defer func() { finish(err) }()
+	lease, err := acquireUpdateLock(filepath.Join(m.root, ".download.lock"))
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock, err := m.operationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if required, message := m.journalStatus(); required {
+		return fmt.Errorf("更新恢复完成前不能调整清理期限：%s", message)
+	}
+	state, err := m.readState()
+	if err != nil {
+		return err
+	}
+	state.CleanupRetentionMinutes = minutes
+	if state.ConfirmedAt != nil && state.CleanupAfter != nil {
+		deadline := state.ConfirmedAt.Add(time.Duration(minutes) * time.Minute)
+		state.CleanupAfter = &deadline
+	}
+	state.UpdatedAt = time.Now().UTC()
+	return m.writeState(ctx, state)
+}
 
 // ConfirmRunning 只由已核验实际进程的启动器调用；预检、版本切换和旧后台都不能触发清理。
 func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (result CleanupResult, err error) {
@@ -63,7 +104,11 @@ func (m *Manager) confirmRunningAt(ctx context.Context, runningVersion string, n
 		return CleanupResult{}, err
 	}
 	if state.ConfirmedAt == nil {
-		deadline := now.Add(CleanupGracePeriod)
+		period := CleanupGracePeriod
+		if state.CleanupRetentionMinutes != 0 {
+			period = time.Duration(state.CleanupRetentionMinutes) * time.Minute
+		}
+		deadline := now.Add(period)
 		state.ConfirmedAt, state.CleanupAfter = &now, &deadline
 		if err := m.writeState(ctx, state); err != nil {
 			return CleanupResult{}, err

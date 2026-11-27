@@ -254,6 +254,15 @@ func main(){
         assert not (profile / "updates/restart-journal.json").exists(), "启动失败恢复后遗留事务"
         print("通过：候选预检通过但真实启动失败，已自动恢复旧版本、数据库和设置，并抑制失败版本", flush=True)
 
+        # 恢复后的服务可先于重启协作进程的最终事件就绪，导出前等待明确的失败完成记录。
+        diagnostic_deadline = time.monotonic() + 10
+        while time.monotonic() < diagnostic_deadline:
+            last = request("/api/v1/update/status")["status"].get("last_diagnostic")
+            if last and last["stage"] == "restart" and last.get("target_version") == "1.0.1":
+                break
+            time.sleep(.05)
+        else:
+            raise AssertionError("恢复完成后没有记录重启失败的最终事件")
         with opener.open(address + "/api/v1/update/diagnostics", timeout=15) as response:
             assert response.headers["Content-Type"] == "application/zip"
             online_diagnostics = response.read()
@@ -290,14 +299,65 @@ func main(){
         stop()
         print("通过：新安装器不被旧指针遮蔽，人工回滚不会被下次打开撤销，源文件摘要不变", flush=True)
 
-        # 停止隔离实例后推进持久化截止时间，验证到期清理，无需等待真实 24 小时。
-        state_path = profile / "updates/install-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["confirmed_at"] = (datetime.now(timezone.utc)-timedelta(hours=25)).isoformat()
-        state["cleanup_after"] = (datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
-        state_path.write_text(json.dumps(state), encoding="utf-8")
-        (profile / "updates/automatic-settings.json").write_text('{"enabled":false}', encoding="utf-8")
+        # 通过正式设置缩短为一分钟，按真实时间等待后台维护；不修改系统时间或伪造健康确认时间。
         assert launch(launcher)["version"] == old_version
+        request("/api/v1/update/automatic", {"enabled": False}, method="PUT")
+        state = request("/api/v1/update/status")["status"]["state"]
+        confirmed_at = state["confirmed_at"]
+        ui_helper = project / ".local/ui/browser.mjs"
+        if ui_helper.is_file() and Path("/Applications/Google Chrome.app").exists():
+            script = '''// 中文说明：仅在隔离实例验证清理设置的确认、保存、刷新持久化和窄屏布局。
+import {openBrowser} from './.local/ui/browser.mjs';
+const browser=await openBrowser(1280,1000);
+try{
+ await browser.navigate(process.env.CHRONICLE_CLEANUP_UI_URL+'/settings/system');
+ await browser.waitFor('document.querySelector("#update-cleanup-retention")');
+ await browser.evaluate(`window.confirm=(message)=>{window.__cleanupPrompt=message;return false};const select=document.querySelector('#update-cleanup-retention');select.value='1';select.dispatchEvent(new Event('change',{bubbles:true}));`);
+ await browser.evaluate(`[...document.querySelectorAll('.update-cleanup-field button')].find(e=>e.textContent.includes('保存清理时间')).click()`);
+ const cancelled=await browser.evaluate(`fetch('/api/v1/update/status').then(r=>r.json())`);
+ if(cancelled.status.state.cleanup_retention_minutes===1)throw Error('取消确认后仍修改了清理期限');
+ if(!await browser.evaluate(`window.__cleanupPrompt?.includes('回退')||window.__cleanupPrompt?.includes('旧版本')`))throw Error('缩短期限没有说明回退影响');
+ await browser.evaluate(`window.confirm=()=>true;document.querySelector('.update-cleanup-field > button').click()`);
+ await browser.waitFor(`document.querySelector('.update-message')?.textContent.includes('已保存')`);
+ await browser.navigate(process.env.CHRONICLE_CLEANUP_UI_URL+'/settings/system');
+ await browser.waitFor(`document.querySelector('#update-cleanup-retention')?.value==='1'`);
+ await browser.evaluate(`document.querySelector('.update-cleanup-field').scrollIntoView({block:'center'})`);
+ if(process.env.CHRONICLE_CLEANUP_SCREENSHOT){const fs=await import('node:fs/promises');const shot=await browser.send('Page.captureScreenshot',{format:'png'});await fs.writeFile(process.env.CHRONICLE_CLEANUP_SCREENSHOT,Buffer.from(shot.data,'base64'));}
+ await browser.resize(480,900);
+ await browser.evaluate(`document.querySelector('.update-cleanup-field').scrollIntoView({block:'center'})`);
+ const fits=await browser.evaluate(`(()=>{const field=document.querySelector('.update-cleanup-field').getBoundingClientRect();const select=document.querySelector('#update-cleanup-retention').getBoundingClientRect();return select.left>=field.left-1&&select.right<=field.right+1})()`);
+ if(!fits)throw Error('清理设置控件溢出容器');
+ if(browser.events.some(e=>e.method==='Runtime.exceptionThrown'))throw Error('清理设置页面出现运行异常');
+}finally{await browser.close()}
+'''
+            browser_environment = dict(environment, CHRONICLE_CLEANUP_UI_URL=address)
+            if os.environ.get("CHRONICLE_CLEANUP_SCREENSHOT"):
+                browser_environment["CHRONICLE_CLEANUP_SCREENSHOT"] = os.environ["CHRONICLE_CLEANUP_SCREENSHOT"]
+            run(["node", "--input-type=module", "-e", script], cwd=project, env=browser_environment)
+            print("通过：浏览器取消确认不修改设置，保存一分钟后刷新保留选择，窄屏控件无溢出", flush=True)
+        else:
+            request("/api/v1/update/cleanup-settings", {"retention_minutes": 1}, method="PUT")
+        state = request("/api/v1/update/status")["status"]
+        assert state["state"]["confirmed_at"] == confirmed_at and state["state"]["cleanup_retention_minutes"] == 1
+        cleanup_at = datetime.fromisoformat(state["state"]["cleanup_after"].replace("Z", "+00:00"))
+        assert cleanup_at-datetime.fromisoformat(confirmed_at.replace("Z", "+00:00")) == timedelta(minutes=1)
+        stop()
+        assert launch(launcher)["version"] == old_version
+        persisted = request("/api/v1/update/status")["status"]["state"]
+        assert persisted["confirmed_at"] == confirmed_at and persisted["cleanup_retention_minutes"] == 1
+        assert datetime.fromisoformat(persisted["cleanup_after"].replace("Z", "+00:00")) == cleanup_at
+        deadline = time.monotonic() + 125
+        while time.monotonic() < deadline:
+            state = request("/api/v1/update/status")["status"]
+            cleanup = state.get("last_cleanup")
+            if cleanup:
+                assert datetime.fromisoformat(cleanup["completed_at"].replace("Z", "+00:00")) >= cleanup_at, "期限到达前提前清理"
+                break
+            if datetime.now(timezone.utc) < cleanup_at:
+                assert (profile / "updates/versions" / new_version).is_dir(), "期限到达前删除了旧版本"
+            time.sleep(.5)
+        else:
+            raise AssertionError("一分钟保留期已过，后台维护仍未留下清理记录")
         state = request("/api/v1/update/status")["status"]
         assert state["last_cleanup"]["removed_items"] >= 3 and not state["state"].get("previous_version"), state
         assert not (profile / "updates/versions" / new_version).exists(), "观察期结束仍保留无用历史版本"
@@ -305,8 +365,10 @@ func main(){
         assert Path(bad_plan["bundle_root"]).is_dir() and new_archive.is_file(), "清理影响待处理计划或外部安装包"
         retained_events = json.loads((profile / "updates/diagnostic-events.json").read_text())
         assert any(e["stage"] == "restart" and e["result"] == "failed" for e in retained_events), "安装包清理丢失失败诊断"
+        assert any(e["stage"] == "cleanup_settings" and e["result"] == "succeeded" for e in retained_events), "修改清理期限没有留下诊断事件"
+        assert request("/api/v1/update/cleanup-settings", {"retention_minutes": 1440}, method="PUT")["status"]["state"].get("cleanup_after") is None, "恢复默认时长重新开启了已结束的清理窗口"
         stop()
-        print("通过：恢复窗口到期后清理历史安装包与旧版本，关闭自动更新不影响清理，保留待处理计划与外部离线包", flush=True)
+        print("通过：保留时长缩短为真实一分钟并跨重启持久化，后台按期清理历史包和旧版本；关闭自动更新不影响清理，保留当前版本、待处理计划、外部包和失败诊断", flush=True)
 
         legacy_ref = os.environ.get("CHRONICLE_TEST_LEGACY_REF", "")
         if legacy_ref:

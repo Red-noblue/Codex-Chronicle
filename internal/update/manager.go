@@ -74,18 +74,19 @@ type Plan struct {
 
 // State 是安装根的当前版本指针；它通过原子替换写入，不依赖软链接。
 type State struct {
-	InstalledVersion string        `json:"installed_version,omitempty"`
-	ActiveVersion    string        `json:"active_version,omitempty"`
-	PreviousVersion  string        `json:"previous_version,omitempty"`
-	LastOperationID  string        `json:"last_operation_id,omitempty"`
-	LastStatus       string        `json:"last_status,omitempty"`
-	LastError        string        `json:"last_error,omitempty"`
-	ConfirmedAt      *time.Time    `json:"confirmed_at,omitempty"`
-	CleanupAfter     *time.Time    `json:"cleanup_after,omitempty"`
-	RejectedVersion  string        `json:"rejected_version,omitempty"`
-	DeferredVersion  string        `json:"deferred_version,omitempty"`
-	Online           *OnlineSource `json:"online,omitempty"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	InstalledVersion        string        `json:"installed_version,omitempty"`
+	ActiveVersion           string        `json:"active_version,omitempty"`
+	PreviousVersion         string        `json:"previous_version,omitempty"`
+	LastOperationID         string        `json:"last_operation_id,omitempty"`
+	LastStatus              string        `json:"last_status,omitempty"`
+	LastError               string        `json:"last_error,omitempty"`
+	ConfirmedAt             *time.Time    `json:"confirmed_at,omitempty"`
+	CleanupAfter            *time.Time    `json:"cleanup_after,omitempty"`
+	CleanupRetentionMinutes int           `json:"cleanup_retention_minutes,omitempty"`
+	RejectedVersion         string        `json:"rejected_version,omitempty"`
+	DeferredVersion         string        `json:"deferred_version,omitempty"`
+	Online                  *OnlineSource `json:"online,omitempty"`
+	UpdatedAt               time.Time     `json:"updated_at"`
 }
 
 // Status 是 UI/API 可展示的安装状态。
@@ -672,7 +673,7 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 		m.recordFailure(ctx, journal, err)
 		return Result{}, fmt.Errorf("更新发布 journal 失败：%w", err)
 	}
-	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, RejectedVersion: state.RejectedVersion, Online: plan.Online, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: plan.Version, PreviousVersion: state.ActiveVersion, RejectedVersion: state.RejectedVersion, Online: plan.Online, CleanupRetentionMinutes: state.CleanupRetentionMinutes, LastOperationID: operationID, LastStatus: "activated", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		if m.registerArtifact == nil {
 			_ = os.RemoveAll(finalRoot)
@@ -740,7 +741,7 @@ func (m *Manager) Rollback(ctx context.Context, health HealthCheck) (result Resu
 	if err != nil {
 		return Result{}, err
 	}
-	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, RejectedVersion: state.ActiveVersion, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
+	next := State{InstalledVersion: state.InstalledVersion, ActiveVersion: state.PreviousVersion, PreviousVersion: state.ActiveVersion, RejectedVersion: state.ActiveVersion, CleanupRetentionMinutes: state.CleanupRetentionMinutes, LastOperationID: id, LastStatus: "rolled_back", UpdatedAt: time.Now().UTC()}
 	if err := m.writeState(ctx, next); err != nil {
 		return Result{}, fmt.Errorf("提交回滚状态失败：%w", err)
 	}
@@ -1035,6 +1036,9 @@ func (m *Manager) readState() (State, error) {
 	if state.DeferredVersion != "" && !safeVersion(state.DeferredVersion) {
 		return State{}, errors.New("安装状态中的暂缓版本无效")
 	}
+	if state.CleanupRetentionMinutes < 0 || state.CleanupRetentionMinutes > MaxCleanupRetentionMinutes {
+		return State{}, ErrInvalidCleanupRetention
+	}
 	if state.Online != nil {
 		if state.Online.Release.Version != state.ActiveVersion || validateOnlineRelease(state.Online.Release, 16<<30) != nil || validateOnlineURL(state.Online.FeedURL, "在线来源") != nil {
 			return State{}, errors.New("安装状态中的在线来源无效")
@@ -1044,6 +1048,9 @@ func (m *Manager) readState() (State, error) {
 }
 
 func (m *Manager) writeState(ctx context.Context, state State) error {
+	if state.CleanupRetentionMinutes < 0 || state.CleanupRetentionMinutes > MaxCleanupRetentionMinutes {
+		return ErrInvalidCleanupRetention
+	}
 	if state.ActiveVersion != "" && !safeVersion(state.ActiveVersion) {
 		return errors.New("当前版本名称无效")
 	}

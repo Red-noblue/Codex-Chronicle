@@ -335,6 +335,9 @@ h1 { margin: 1px 0 0; font-size: var(--font-title); font-weight: 650; }
 .update-online-head { display: flex; justify-content: space-between; gap: 7px; color: var(--text-secondary); font-size: var(--font-caption); }
 .update-online-head small { min-width: 0; overflow: hidden; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .update-proxy-field { display: grid; gap: 4px; color: var(--text-secondary); font-size: var(--font-caption); }
+.update-cleanup-field { display: grid; gap: 4px; color: var(--text-secondary); font-size: var(--font-caption); }
+.update-cleanup-field label { display: inline-flex; align-items: center; gap: 5px; }
+.update-cleanup-field select { width: 100%; border: 1px solid var(--border-strong); border-radius: var(--radius-control); padding: 6px 7px; background: var(--bg-subtle); color: var(--text-primary); font-size: var(--font-caption); }
 .update-online-release { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; color: var(--text-primary); font-size: var(--font-caption); }
 .update-online-release span { color: var(--text-secondary); }
 .recovery-panel { display: grid; gap: 7px; margin-top: 12px; }
