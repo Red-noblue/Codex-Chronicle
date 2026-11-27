@@ -5,9 +5,27 @@ import (
 	"encoding/xml"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAutostartSurvivesManagedVersionChange(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	data := t.TempDir()
+	oldRoot := filepath.Join(data, "updates", "versions", "0.1.0-preview.19")
+	newRoot := filepath.Join(data, "updates", "versions", "0.1.0-preview.20")
+	if err := SetAutostart(filepath.Join(oldRoot, "bin", ExecutableName("codex-chronicle-desktop")), data, oldRoot, true); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := AutostartEnabled(filepath.Join(newRoot, "bin", ExecutableName("codex-chronicle-desktop")), data, newRoot)
+	if err != nil || !enabled {
+		t.Fatalf("升级后丢失了用户已开启的登录启动设置：%v %v", enabled, err)
+	}
+	if enabled, err := AutostartEnabled("other", t.TempDir(), newRoot); err != nil || enabled {
+		t.Fatalf("把其他用户目录的登录项当成了本次设置：%v %v", enabled, err)
+	}
+}
 
 func TestLoginAgentRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

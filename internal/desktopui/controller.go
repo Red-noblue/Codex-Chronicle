@@ -26,7 +26,8 @@ func (c trayController) settings() (desktop.StartupSettings, bool, error) {
 	if err != nil {
 		return settings, false, err
 	}
-	login, err := desktop.AutostartEnabled(c.executable, c.dataDir, c.packageRoot)
+	executable, root := desktop.LoginEntry(c.executable, c.dataDir, c.packageRoot)
+	login, err := desktop.AutostartEnabled(executable, c.dataDir, root)
 	return settings, login, err
 }
 
@@ -48,11 +49,17 @@ func (c trayController) toggleFallback() error {
 }
 
 func (c trayController) toggleAutostart() error {
-	enabled, err := desktop.AutostartEnabled(c.executable, c.dataDir, c.packageRoot)
+	executable, root := desktop.LoginEntry(c.executable, c.dataDir, c.packageRoot)
+	enabled, err := desktop.AutostartEnabled(executable, c.dataDir, root)
 	if err != nil {
 		return err
 	}
-	return desktop.SetAutostart(c.executable, c.dataDir, c.packageRoot, !enabled)
+	if !enabled && executable != c.executable {
+		if err := desktop.PrepareLoginLauncher(context.Background(), desktop.LaunchOptions{DataDir: c.dataDir, PackageRoot: c.packageRoot}); err != nil {
+			return err
+		}
+	}
+	return desktop.SetAutostart(executable, c.dataDir, root, !enabled)
 }
 
 func (c trayController) quit() error {

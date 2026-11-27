@@ -17,7 +17,7 @@ func loginAgentPath() (string, error) {
 func loginAgent(executable, dataDir, packageRoot string, enabled bool) []byte {
 	var body bytes.Buffer
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>local.codex-chronicle.desktop</string><key>ProgramArguments</key><array>`)
-	for _, argument := range []string{executable, "--background", "--data-dir", dataDir, "--package-root", packageRoot} {
+	for _, argument := range loginArguments(executable, dataDir, packageRoot) {
 		body.WriteString("<string>")
 		xml.EscapeText(&body, []byte(argument))
 		body.WriteString("</string>")
@@ -41,7 +41,12 @@ func AutostartEnabled(executable, dataDir, packageRoot string) (bool, error) {
 	if os.IsNotExist(err) {
 		return false, nil
 	}
-	return bytes.Equal(data, loginAgent(executable, dataDir, packageRoot, true)), err
+	if err != nil {
+		return false, err
+	}
+	return matchesLoginEntry(string(data), dataDir, func(entry, root string) (string, error) {
+		return string(loginAgent(entry, dataDir, root, true)), nil
+	}, executable, packageRoot)
 }
 
 func SetAutostart(executable, dataDir, packageRoot string, enabled bool) error {
