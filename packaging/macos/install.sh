@@ -10,4 +10,5 @@ chronicle_data="${3:-$HOME/Library/Application Support/Codex Chronicle}"
 "$chronicle_source/Contents/MacOS/Codex Chronicle" --no-browser --install-app "$chronicle_source" --install-target "$chronicle_target" --data-dir "$chronicle_data"
 if [[ "${CHRONICLE_NO_OPEN:-0}" != 1 ]]; then
   /usr/bin/open "$chronicle_target" --args --data-dir "$chronicle_data"
+  echo '应用已交由系统启动，可以关闭此终端窗口。'
 fi

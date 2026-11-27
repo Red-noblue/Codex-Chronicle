@@ -111,7 +111,7 @@ func TestMacInstallInterruptedStages(t *testing.T) {
 		t.Fatalf("故障子进程未停在检查点：%v", err)
 	}
 	app, _ = filepath.Abs(app)
-	for _, phase := range []string{"snapshot_saved", "previous_moved", "candidate_installed", "commit_recorded", "activated"} {
+	for _, phase := range []string{"snapshot_saved", "previous_moved", "candidate_installed", "commit_recorded", "activated", "check_stopped"} {
 		t.Run(phase, func(t *testing.T) {
 			root := t.TempDir()
 			data, source, target := filepath.Join(root, "profile"), filepath.Join(root, "source"), filepath.Join(root, "apps", "Codex Chronicle.app")
@@ -138,6 +138,14 @@ func TestMacInstallInterruptedStages(t *testing.T) {
 			if err := InstallMacApp(t.Context(), app, target, data, io.Discard); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := Running(t.Context(), data); err == nil {
+				t.Fatal("安装完成后仍保留安装器启动的后台")
+			}
+			lease, err := Acquire(filepath.Join(data, "runtime"))
+			if err != nil {
+				t.Fatalf("安装结束后后台锁未释放：%v", err)
+			}
+			_ = lease.Close()
 			command := exec.Command(os.Args[0], "-test.run=^TestMacInstallInterruptedStages$")
 			command.Env = append(os.Environ(), "CHRONICLE_INSTALL_TEST_APP="+app, "CHRONICLE_INSTALL_TEST_DATA="+data, "CHRONICLE_INSTALL_TEST_TARGET="+target, "CHRONICLE_INSTALL_TEST_STAGE="+phase, "CHRONICLE_INSTALL_TEST_SOURCE="+source)
 			if err := command.Start(); err != nil {
@@ -173,7 +181,7 @@ func TestMacInstallInterruptedStages(t *testing.T) {
 			if err != nil || restored.ScanRoot != source {
 				t.Fatalf("恢复设置失败：%+v %v", restored, err)
 			}
-			committed := phase == "commit_recorded" || phase == "activated"
+			committed := phase == "commit_recorded" || phase == "activated" || phase == "check_stopped"
 			if (restored.ArchiveRoot != "") != committed {
 				t.Fatalf("恢复越过提交边界：%+v", restored)
 			}

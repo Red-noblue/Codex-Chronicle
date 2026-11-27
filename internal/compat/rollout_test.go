@@ -2,11 +2,53 @@
 package compat
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"codex-chronicle.local/internal/domain"
 )
+
+func TestAnalyzeRolloutKeepsUTF8AtPreviewAndTitleBoundaries(t *testing.T) {
+	for _, limit := range []int{96, maxPreviewBytes} {
+		for _, character := range []string{"é", "中", "🙂"} {
+			for offset := 0; offset <= len(character); offset++ {
+				prefix := strings.Repeat("a", limit-offset)
+				message := prefix + character + "尾部"
+				input, err := json.Marshal(map[string]any{
+					"type": "event_msg", "payload": map[string]string{"type": "user_message", "message": message},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				projection, _, err := AnalyzeRollout(strings.NewReader(string(input)+"\n"), "sessions/boundary.jsonl")
+				if err != nil {
+					t.Fatal(err)
+				}
+				value := projection.FirstUserText
+				if limit == 96 {
+					value = projection.Title
+				}
+				want := prefix + "…"
+				if offset == len(character) {
+					want = prefix + character + "…"
+				}
+				if !utf8.ValidString(value) || value != want {
+					t.Errorf("字节边界 %d，字符 %q，偏移 %d：摘要截断不完整，长度 %d", limit, character, offset, len(value))
+				}
+			}
+		}
+	}
+	for _, text := range []string{"简短标题", strings.Repeat("中", 32), strings.Repeat("🙂", 24)} {
+		if got := titleFromText(text); got != text {
+			t.Errorf("未超过上限的标题被修改：%q", got)
+		}
+	}
+	if text := strings.Repeat("中", 341) + "a"; limitPreview(text) != text {
+		t.Fatal("恰好达到字节上限的首问被截断")
+	}
+}
 
 func TestAnalyzeRolloutBuildsConversationProjection(t *testing.T) {
 	input := strings.NewReader("{" +

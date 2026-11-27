@@ -57,6 +57,7 @@ def main():
     safe_to_cleanup = False
     try:
         run(["bash", old_app / "Contents/Resources/install-macos.sh", old_app, target, profile], env=environment)
+        run([entry(target), "--no-browser", "--data-dir", profile], env=environment)
         before = instance(target, profile)
         initial_state = get_json(before["url"], "/api/v1/update/status")["status"]["state"]
         assert initial_state["active_version"] == before["version"] and initial_state["installed_version"] == before["version"], "首次安装未自动建立版本基线"
@@ -70,6 +71,8 @@ def main():
         print("通过：首次安装、真实进程健康检查、重复启动复用已有实例")
 
         run(["bash", installer, new_app, target, profile], env=environment)
+        assert not (profile / "runtime/instance.json").exists(), "安装检查后台仍被安装器保留"
+        run([entry(target), "--no-browser", "--data-dir", profile], env=environment)
         after = instance(target, profile)
         expected_version = run([entry(new_app), "--version"]).strip()
         assert after["version"] == expected_version and after["pid"] != before["pid"], "未切换到新版本"
@@ -104,6 +107,8 @@ func main(){
         failed = subprocess.run(["bash", str(installer), str(faulty), str(target), str(profile)], text=True, capture_output=True, timeout=180, env=environment)
         assert failed.returncode != 0, "合成故障候选被错误接纳"
         assert "已恢复旧应用" in failed.stdout + failed.stderr, failed.stdout + failed.stderr
+        assert not (profile / "runtime/instance.json").exists(), "失败恢复在禁止打开应用时留下后台"
+        run([entry(target), "--no-browser", "--data-dir", profile], env=environment)
         restored = instance(target, profile)
         assert restored["version"] == expected_version and not restored.get("startup_paused"), "旧后台未恢复"
         assert get_json(restored["url"], "/api/v1/update/status")["status"]["state"] == upgraded_state, "安装失败未恢复原版本指针"
