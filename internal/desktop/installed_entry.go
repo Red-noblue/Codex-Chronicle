@@ -121,7 +121,7 @@ func discoverLegacyInstalledEntry(ctx context.Context, options LaunchOptions) er
 		candidates = []string{"/Applications/Codex Chronicle.app/Contents/Resources/app", filepath.Join(home, "Applications", "Codex Chronicle.app", "Contents", "Resources", "app")}
 	case "windows":
 		if local := os.Getenv("LOCALAPPDATA"); filepath.IsAbs(local) {
-			candidates = []string{filepath.Join(local, "Programs", "Codex Chronicle")}
+			candidates = []string{filepath.Join(local, "Programs", "Codex Chronicle", "app"), filepath.Join(local, "Programs", "Codex Chronicle")}
 		}
 	case "linux":
 		candidates = []string{"/usr/lib/codex-chronicle"}

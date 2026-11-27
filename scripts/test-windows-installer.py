@@ -27,6 +27,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("installer", type=Path)
     parser.add_argument("version")
+    parser.add_argument("--legacy-installer", type=Path)
     args = parser.parse_args()
     installer = args.installer.resolve(strict=True)
     uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{5FA52307-E1AC-4396-8C46-3F2D56214CF4}_is1"
@@ -55,7 +56,8 @@ def main():
     sentinel.write_text('{"safe":"安装不修改对话源"}\n', encoding="utf-8")
     original = hashlib.sha256(sentinel.read_bytes()).hexdigest()
     environment = dict(os.environ, LOCALAPPDATA=str(local_data))
-    launcher = application / "bin/codex-chronicle-desktop.exe"
+    payload = application / "app"
+    launcher = payload / "bin/codex-chronicle-desktop.exe"
     uninstaller = application / "unins000.exe"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     gui = settings = None
@@ -116,10 +118,22 @@ def main():
         raise AssertionError("没有找到原生窗口：" + title)
 
     try:
+        if args.legacy_installer:
+            run([args.legacy_installer.resolve(strict=True), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=" + str(application), "/GROUP=Codex Chronicle 隔离验收"])
+            installed = True
+            assert (application / "codex-chronicle-release.json").is_file(), "旧安装器没有生成预期旧布局"
+            profile.mkdir(parents=True)
+            (profile / "legacy-retained.txt").write_text("旧版用户数据保留", encoding="utf-8")
         run([installer, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=" + str(application), "/GROUP=Codex Chronicle 隔离验收", "/LOG=" + str(scratch / "install.log")])
         installed = True
-        manifest = json.loads((application / "codex-chronicle-release.json").read_text())
+        manifest = json.loads((payload / "codex-chronicle-release.json").read_text())
         assert manifest["version"] == args.version and manifest["os"] == "windows" and manifest["signature"]
+        assert not (application / "codex-chronicle-release.json").exists(), "旧布局的程序清单未被迁移清理"
+        assert not (application / "bin").exists(), "旧布局的程序目录未被迁移清理"
+        assert (application / "unins000.dat").is_file() and not (payload / "unins000.dat").exists(), "卸载元数据仍混入签名载荷"
+        if args.legacy_installer:
+            assert (profile / "legacy-retained.txt").read_text(encoding="utf-8") == "旧版用户数据保留"
+            print("通过：Windows 旧布局原地覆盖迁移，清理旧程序目录，保留原用户数据", flush=True)
         run([launcher, "--no-browser", "--data-dir", profile, "--scan-root", source, "--address", "127.0.0.1:0"])
         safe = False
         first = wait_instance()

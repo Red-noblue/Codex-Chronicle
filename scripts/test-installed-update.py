@@ -442,7 +442,12 @@ try{
             installer_root.mkdir()
             installer_environment = dict(environment, CHRONICLE_VERSION=later_version, CHRONICLE_PAYLOAD=str(later), CHRONICLE_ARCH=arch)
             run([compiler, "/O" + str(installer_root), "/FChronicle-Isolated-Test", project / "packaging/windows/installer.iss"], cwd=project, env=installer_environment)
-            print(run([sys.executable, project / "scripts/test-windows-installer.py", installer_root / "Chronicle-Isolated-Test.exe", later_version], env=environment), end="", flush=True)
+            installer_test = [sys.executable, project / "scripts/test-windows-installer.py", installer_root / "Chronicle-Isolated-Test.exe", later_version]
+            if legacy_ref:
+                legacy_environment = dict(environment, CHRONICLE_VERSION=legacy_version, CHRONICLE_PAYLOAD=str(legacy), CHRONICLE_ARCH=arch)
+                run([compiler, "/O" + str(installer_root), "/FChronicle-Legacy-Test", legacy_source / "packaging/windows/installer.iss"], cwd=project, env=legacy_environment)
+                installer_test += ["--legacy-installer", installer_root / "Chronicle-Legacy-Test.exe"]
+            print(run(installer_test, env=environment), end="", flush=True)
     finally:
         try:
             if not safe_to_cleanup:

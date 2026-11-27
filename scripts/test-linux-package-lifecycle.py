@@ -19,7 +19,8 @@ def main():
         for name, expected in (("unrelated-program", 0), ("codex-chronicle", 1), ("codex-chronicle-desktop", 1)):
             executable = root / name
             shutil.copy2(sleep, executable)
-            process = subprocess.Popen([str(executable), "60"])
+            # 兼容将 sleep 实现为多调用核心工具的发行版，同时保持 /proc 中的真实可执行路径。
+            process = subprocess.Popen(["sleep", "60"], executable=str(executable))
             try:
                 time.sleep(.1)
                 assert process.poll() is None, "休眠样本未正常启动"
