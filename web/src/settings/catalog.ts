@@ -30,7 +30,7 @@ export const settingsItems = {
   repositories: { category: 'remote', title: '归档仓库', description: '选择或创建 GitHub 私有仓库作为归档目标。', scope: '远端服务 · 显式操作', keywords: 'GitHub 仓库 私有 创建 目标 repository' },
   remoteArchives: { category: 'remote', title: '远端归档批次', description: '查看、验证或下载已有远端归档。', scope: '操作 · 单独确认', keywords: '远端 provider 下载 分片 校验 删除 恢复' },
   platform: { category: 'system', title: '平台能力', description: '查看当前系统的只读探测结果与能力限制。', scope: '只读状态', keywords: '平台 OS Linux Windows macOS 锁 探针 权限' },
-  updates: { category: 'system', title: '应用更新', description: '管理自动更新、下载代理和失败恢复。', scope: '全局设置 · 自动保存', keywords: '自动 更新 清理 安装包 离线 在线 feed 版本 签名 回滚 ZIP TAR' }
+  updates: { category: 'system', title: '应用更新', description: '管理自动更新、下载代理、旧版清理和失败恢复。', scope: '全局设置', keywords: '自动 更新 清理 安装包 离线 在线 feed 版本 签名 回滚 ZIP TAR' }
 } satisfies Record<string, SettingsItem>;
 
 export type SettingsItemId = keyof typeof settingsItems;

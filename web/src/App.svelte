@@ -405,6 +405,7 @@
       last_error?: string;
       confirmed_at?: string;
       cleanup_after?: string;
+      cleanup_retention_minutes?: number;
       updated_at?: string;
     };
     versions: string[];
@@ -996,7 +997,14 @@
   let updatePlan: UpdatePlan | null = null;
   let updateBundleRoot = '';
   let updateLoading = false;
-  let updateAction: 'check' | 'proxy' | 'download' | 'offline' | '' = '';
+  let updateAction: 'check' | 'proxy' | 'download' | 'offline' | 'cleanup' | '' = '';
+  let updateCleanupMinutes = 1440;
+  const updateCleanupOptions = [
+    { minutes: 1, label: '1 分钟（测试）' }, { minutes: 5, label: '5 分钟（测试）' },
+    { minutes: 60, label: '1 小时' }, { minutes: 360, label: '6 小时' },
+    { minutes: 1440, label: '24 小时（默认）' }, { minutes: 4320, label: '3 天' },
+    { minutes: 10080, label: '7 天' }, { minutes: 43200, label: '30 天' }
+  ];
   let updateStatusPolling = false;
   let updateMessage = '';
   let updateDiagnosticsExporting = false;
@@ -2142,6 +2150,7 @@
       updateRestartAvailable = body.restart_available === true;
       updateAutomaticAvailable = body.automatic_available === true;
       updateRestartRequired = body.restart_required === true;
+      updateCleanupMinutes = updateStatus?.state.cleanup_retention_minutes || 1440;
       updateProxyURL = updateStatus?.online_proxy_url || '';
       if (updateProxyURL) {
         try {
@@ -2217,6 +2226,31 @@
       updateMessage = enabled ? '已开启自动更新。' : '已关闭自动更新，仍可手动检查。';
     } catch (error) { updateMessage = error instanceof Error ? error.message : '无法保存自动更新设置'; }
     finally { control.checked = updateStatus?.automatic?.enabled !== false; updateLoading = false; }
+  }
+
+  async function saveUpdateCleanupRetention() {
+    if (!updateStatus || updateLoading) return;
+    if (updateCleanupMinutes < (updateStatus.state.cleanup_retention_minutes || 1440)) {
+      let message = '缩短保留时长会提前结束旧版本的回退期。';
+      if (updateStatus.state.confirmed_at && updateStatus.state.cleanup_after) {
+        const deadline = Date.parse(updateStatus.state.confirmed_at) + updateCleanupMinutes * 60_000;
+        message = deadline <= Date.now()
+          ? '本次更新已超过新的保留期限，保存后后台将尝试清理旧版本；清理后无法回退。'
+          : `本次更新最早可在 ${formatTime(new Date(deadline).toISOString())} 清理旧版本，之后无法回退。`;
+      }
+      if (!window.confirm(`${message}\n确认保存新的保留时长？`)) return;
+    }
+    updateLoading = true;
+    updateAction = 'cleanup';
+    try {
+      const response = await apiFetch('/api/v1/update/cleanup-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retention_minutes: updateCleanupMinutes }) });
+      const body = await response.json() as { status?: UpdateStatus; error?: string };
+      if (!response.ok || !body.status) throw new Error(body.error || '无法保存清理设置');
+      updateStatus = body.status;
+      updateCleanupMinutes = body.status.state.cleanup_retention_minutes || 1440;
+      updateMessage = body.status.state.cleanup_after ? '已保存，当前清理期限已按首次健康确认时间重新计算。' : '已保存，后续更新将使用此保留时长。';
+    } catch (error) { updateMessage = error instanceof Error ? error.message : '无法保存清理设置'; }
+    finally { updateLoading = false; updateAction = ''; }
   }
 
   async function checkOnlineUpdate() {
@@ -5324,7 +5358,7 @@
         </SettingsPanel>
       {/if}
       {#if visibleIDs.includes('updates')}
-        <SettingsPanel id="updates" helpText="默认后台检查、下载和验签。网页不可见且后台任务空闲 5 分钟后自动重启，不主动打开浏览器；也可手动立即更新。启动失败会恢复旧版本和启动前的项目数据库与设置。确认成功 24 小时后清理本应用下载的安装包、预检副本和旧版本，截止时间跨重启保留；文件占用时重试，关闭自动更新不影响清理。保留当前程序、系统入口和待处理更新，不删除外部离线包，也不改动原始对话。观察期后不再提供旧版本一键回退。">
+        <SettingsPanel id="updates" helpText="默认后台检查、下载和验签。网页不可见且后台任务空闲 5 分钟后自动重启，不主动打开浏览器；也可手动立即更新。启动失败会恢复旧版本和启动前的项目数据库与设置。确认成功后默认保留 24 小时，可调整保留时长，之后清理本应用下载的安装包、预检副本和旧版本，截止时间跨重启保留；文件占用时重试，关闭自动更新不影响清理。保留当前程序、系统入口和待处理更新，不删除外部离线包，也不改动原始对话。观察期后不再提供旧版本一键回退。">
       {#if updateStatus}
       <div class="update-panel">
         {#if updateAutomaticAvailable && updateStatus.online_configured}
@@ -5364,8 +5398,17 @@
           <div class="update-plan"><strong>待确认：{updatePlan.version}</strong><span>{updatePlan.file_count} 个文件 · {formatBytes(updatePlan.total_bytes)}</span>{#if updateRestartAvailable}<button class="copy-confirm" on:click={() => activateUpdate(true)} disabled={updateLoading || updatePreflight?.blocked}>更新并重启</button><button class="secondary-button" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>稍后重启</button>{:else}<button class="copy-confirm" on:click={() => activateUpdate(false)} disabled={updateLoading || updatePreflight?.blocked}>确认切换版本</button>{/if}</div>
         {/if}
         {#if updateStatus.state.previous_version}<button class="update-rollback" on:click={rollbackUpdate} disabled={updateLoading}>回滚到 {updateStatus.state.previous_version}</button>{/if}
+        <div class="update-cleanup-field">
+          <label for="update-cleanup-retention">旧版本保留时长<HelpBubble id="update-cleanup-help" label="自动清理期限说明" text="默认 24 小时。保留期从新版本首次健康确认开始计算；修改后重新计算当前期限，保存不会重新计时。已到期的项目由下一轮后台维护清理，通常在一分钟内；下载占用或恢复异常时会推迟。缩短时长也会缩短回退期，清理后延长时长不能恢复旧版本。仅清理受管理的更新文件，保留当前程序、系统入口、待处理更新、外部离线包和用户数据。" /></label>
+          <select id="update-cleanup-retention" bind:value={updateCleanupMinutes} disabled={updateLoading}>
+            {#if !updateCleanupOptions.some(option => option.minutes === updateCleanupMinutes)}<option value={updateCleanupMinutes}>{updateCleanupMinutes} 分钟（自定义）</option>{/if}
+            {#each updateCleanupOptions as option}<option value={option.minutes}>{option.label}</option>{/each}
+          </select>
+          <button class="secondary-button" on:click={saveUpdateCleanupRetention} disabled={updateLoading || updateStatus.recovery_required || updateCleanupMinutes === (updateStatus.state.cleanup_retention_minutes || 1440)}>{updateAction === 'cleanup' ? '保存中…' : '保存清理时间'}</button>
+        </div>
+        {#if updateCleanupMinutes < 60}<small class="copy-note">测试用短时长，会提前结束旧版本的回退期。</small>{/if}
         <small class="copy-note">{updateStatus.state.cleanup_after ? `恢复窗口截至 ${formatTime(updateStatus.state.cleanup_after)}，随后自动清理旧包和旧版本。` : '不长期保留历史安装包。'}</small>
-        {#if updateStatus.last_cleanup?.removed_items}<small class="copy-note">上次自动清理释放 {formatBytes(updateStatus.last_cleanup.freed_bytes)}。</small>{/if}
+        {#if updateStatus.last_cleanup}<small class="copy-note">上次清理：{formatTime(updateStatus.last_cleanup.completed_at)} · 清理 {updateStatus.last_cleanup.removed_items} 项 · 释放 {formatBytes(updateStatus.last_cleanup.freed_bytes)}。</small>{/if}
         {#if updateStatus.last_cleanup?.warnings?.length}<HelpBubble id="update-cleanup-warning" label="更新清理说明" text={updateStatus.last_cleanup.warnings.join('；')} />{/if}
         {#if updateMessage}<div class="update-message">{updateMessage}</div>{/if}
       </div>

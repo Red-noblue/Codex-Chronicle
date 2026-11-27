@@ -188,3 +188,111 @@ func TestCleanupRefusesBusyOrInterruptedUpdates(t *testing.T) {
 		t.Fatal("中断更新未恢复就进行了清理")
 	}
 }
+
+func TestCleanupRetentionReschedulesWithoutResettingHealthConfirmation(t *testing.T) {
+	m, err := NewManager(filepath.Join(t.TempDir(), "updates"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RegisterInstallation(t.Context(), makeBundle(t, "1.0.0", "首次安装"), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := m.Prepare(t.Context(), makeBundle(t, "2.0.0", "升级"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Activate(t.Context(), plan, m.VerifyVersionRoot); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := m.confirmRunningAt(t.Context(), "2.0.0", now); err != nil {
+		t.Fatal(err)
+	}
+	for _, minutes := range []int{5, 5, 30, 2} {
+		if err := m.SetCleanupRetention(t.Context(), minutes); err != nil {
+			t.Fatal(err)
+		}
+		m, err = NewManager(m.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, err := m.Status(t.Context())
+		if err != nil || status.State.CleanupRetentionMinutes != minutes || status.State.ConfirmedAt == nil || !status.State.ConfirmedAt.Equal(now) || status.State.CleanupAfter == nil || !status.State.CleanupAfter.Equal(now.Add(time.Duration(minutes)*time.Minute)) {
+			t.Fatalf("设置未持久化或重置了计时起点：%+v %v", status.State, err)
+		}
+		if err := m.VerifyVersionRoot(t.Context(), filepath.Join(m.root, VersionDir, "1.0.0")); err != nil {
+			t.Fatal("保存设置时直接删除了旧版本", err)
+		}
+	}
+	if result, err := m.confirmRunningAt(t.Context(), "2.0.0", now.Add(2*time.Minute-time.Second)); err != nil || result.RemovedItems != 0 {
+		t.Fatalf("缩短后的期限到达前提前清理：%+v %v", result, err)
+	}
+	if result, err := m.confirmRunningAt(t.Context(), "2.0.0", now.Add(2*time.Minute)); err != nil || result.RemovedItems != 1 {
+		t.Fatalf("缩短后的期限没有执行清理：%+v %v", result, err)
+	}
+	if err := m.SetCleanupRetention(t.Context(), 7); err != nil {
+		t.Fatal(err)
+	}
+	status, err := m.Status(t.Context())
+	if err != nil || status.State.CleanupAfter != nil || status.State.PreviousVersion != "" {
+		t.Fatal("延长时长重新启用了已清理的回退窗口", err)
+	}
+	plan, err = m.Prepare(t.Context(), makeBundle(t, "3.0.0", "再次升级"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Activate(t.Context(), plan, m.VerifyVersionRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.confirmRunningAt(t.Context(), "3.0.0", now); err != nil {
+		t.Fatal(err)
+	}
+	status, err = m.Status(t.Context())
+	if err != nil || status.State.CleanupRetentionMinutes != 7 || status.State.CleanupAfter == nil || !status.State.CleanupAfter.Equal(now.Add(7*time.Minute)) {
+		t.Fatal("后续更新没有沿用已保存的保留时长", err)
+	}
+	if _, err := m.Rollback(t.Context(), m.VerifyVersionRoot); err != nil {
+		t.Fatal(err)
+	}
+	status, err = m.Status(t.Context())
+	if err != nil || status.State.CleanupRetentionMinutes != 7 {
+		t.Fatal("回滚丢失了清理设置", err)
+	}
+}
+
+func TestCleanupRetentionRejectsInvalidValuesAndBusyOrInterruptedUpdates(t *testing.T) {
+	m, err := NewManager(filepath.Join(t.TempDir(), "updates"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCleanupRetention(t.Context(), 1440); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(m.root, StateName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, minutes := range []int{-1, 0, 43201} {
+		if err := m.SetCleanupRetention(t.Context(), minutes); err == nil {
+			t.Fatalf("接受了非法保留时长 %d", minutes)
+		}
+	}
+	lease, err := acquireUpdateLock(filepath.Join(m.root, ".download.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCleanupRetention(t.Context(), 1); err == nil {
+		t.Fatal("更新占用期间允许修改清理期限")
+	}
+	lease.Close()
+	if err := writeAtomicJSON(t.Context(), filepath.Join(m.root, JournalName), journal{Phase: "staging"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCleanupRetention(t.Context(), 1); err == nil {
+		t.Fatal("更新恢复完成前允许修改清理期限")
+	}
+	after, err := os.ReadFile(filepath.Join(m.root, StateName))
+	if err != nil || string(before) != string(after) {
+		t.Fatal("被拒绝的设置修改了安装状态", err)
+	}
+}

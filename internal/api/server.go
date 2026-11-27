@@ -655,6 +655,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/update/diagnostics", s.updateDiagnosticsHandler)
 	mux.HandleFunc("/api/v1/update/proxy", s.updateProxyHandler)
 	mux.HandleFunc("/api/v1/update/automatic", s.updateAutomaticHandler)
+	mux.HandleFunc("/api/v1/update/cleanup-settings", s.updateCleanupSettingsHandler)
 	mux.HandleFunc("/api/v1/update/activity", s.updateActivityHandler)
 	mux.HandleFunc("/api/v1/update/check", s.updateCheckHandler)
 	mux.HandleFunc("/api/v1/update/download", s.updateDownloadHandler)
