@@ -105,6 +105,7 @@ type Status struct {
 	LastCleanup       *CleanupResult    `json:"last_cleanup,omitempty"`
 	Automatic         AutomaticStatus   `json:"automatic"`
 	Download          *DownloadProgress `json:"download,omitempty"`
+	LastDiagnostic    *DiagnosticEvent  `json:"last_diagnostic,omitempty"`
 }
 
 // SetOnlineProxy 更新并持久化仅供在线更新使用的代理地址。
@@ -336,10 +337,12 @@ func (m *Manager) Prepare(ctx context.Context, bundleRoot string, allowDowngrade
 }
 
 // PreparePath 根据路径类型选择目录 bundle 或压缩离线包；目录调用保持与 Prepare 相同的校验。
-func (m *Manager) PreparePath(ctx context.Context, bundlePath string, allowDowngrade bool) (Plan, error) {
+func (m *Manager) PreparePath(ctx context.Context, bundlePath string, allowDowngrade bool) (result Plan, err error) {
 	if m == nil {
 		return Plan{}, errors.New("更新管理器未初始化")
 	}
+	finish := BeginDiagnostic(m.root, "prepare_offline", "")
+	defer func() { finish(err) }()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lock, err := m.operationLock()
@@ -401,7 +404,10 @@ func (m *Manager) prepareArchiveLocked(ctx context.Context, archivePath string, 
 		return Plan{}, err
 	}
 	stage := filepath.Join(m.root, BundlesDirName, ".staging-"+id)
-	if err := ExtractArchive(ctx, archivePath, stage, DefaultExtractionLimits); err != nil {
+	finishExtract := BeginDiagnostic(m.root, "extract", "")
+	err = ExtractArchive(ctx, archivePath, stage, DefaultExtractionLimits)
+	finishExtract(err)
+	if err != nil {
 		return Plan{}, fmt.Errorf("解压离线包失败：%w", err)
 	}
 	keepBundle := false
@@ -437,7 +443,9 @@ func (m *Manager) prepareBundleLocked(ctx context.Context, bundleRoot string, al
 	if err != nil {
 		return Plan{}, err
 	}
+	finishVerify := BeginDiagnostic(m.root, "verify_signature", "")
 	manifest, manifestHash, err := m.readAndValidateManifest(ctx, bundle)
+	finishVerify(err)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -502,10 +510,12 @@ func (m *Manager) ActivateByID(ctx context.Context, id string, health HealthChec
 }
 
 // Activate 在候选版本健康检查通过后原子更新当前版本状态。
-func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (Result, error) {
+func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (result Result, err error) {
 	if m == nil {
 		return Result{}, errors.New("更新管理器未初始化")
 	}
+	finish := BeginDiagnostic(m.root, "activate", plan.Version)
+	defer func() { finish(err) }()
 	if health == nil {
 		return Result{}, errors.New("更新切换必须提供健康检查")
 	}
@@ -693,10 +703,12 @@ func (m *Manager) Activate(ctx context.Context, plan Plan, health HealthCheck) (
 }
 
 // Rollback 将当前版本指针切换回上一版本；旧版本目录保留供人工检查。
-func (m *Manager) Rollback(ctx context.Context, health HealthCheck) (Result, error) {
+func (m *Manager) Rollback(ctx context.Context, health HealthCheck) (result Result, err error) {
 	if m == nil {
 		return Result{}, errors.New("更新管理器未初始化")
 	}
+	finish := BeginDiagnostic(m.root, "rollback", "")
+	defer func() { finish(err) }()
 	if health == nil {
 		return Result{}, errors.New("回滚必须提供健康检查")
 	}
@@ -762,6 +774,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	status := Status{InstallRoot: m.root, State: state, Versions: versions, PendingPlanIDs: plans, RecoveryRequired: recoveryRequired, RecoveryMessage: recoveryMessage, ReadOnlySource: true, SignatureRequired: m.requireSignature, TrustedKeyCount: len(m.trustedPublicKeys), OnlineConfigured: m.online.FeedURL != "", OnlineFeedURL: m.online.FeedURL, OnlineProxyURL: m.online.ProxyURL}
 	status.Automatic, err = m.automaticStatus()
 	status.Download = m.downloadProgress
+	status.LastDiagnostic = lastDiagnosticFailure(m.root)
 	if err != nil {
 		return Status{}, err
 	}

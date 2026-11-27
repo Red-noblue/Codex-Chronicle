@@ -420,6 +420,7 @@
     last_cleanup?: { running_version: string; removed_items: number; freed_bytes: number; warnings?: string[]; completed_at: string };
     automatic?: { enabled: boolean; phase: string; plan_id?: string; target_version?: string; last_error?: string; last_checked_at?: string; next_check_at?: string };
     download?: { version: string; received_bytes: number; total_bytes: number; resumed: boolean };
+    last_diagnostic?: { id: string; at: string; stage: string; code?: string; message?: string };
   };
   type OnlineRelease = {
     version: string;
@@ -998,6 +999,8 @@
   let updateAction: 'check' | 'proxy' | 'download' | 'offline' | '' = '';
   let updateStatusPolling = false;
   let updateMessage = '';
+  let updateDiagnosticsExporting = false;
+  let updateDiagnosticsMessage = '';
   let projectRelation: ProjectRelationReport | null = null;
   let projectLoading = false;
   let projectMessage = '';
@@ -2168,9 +2171,38 @@
     try {
       const response = await apiFetch('/api/v1/update/status');
       const body = await response.json() as { status?: UpdateStatus };
-      if (response.ok && body.status && updateStatus) updateStatus = { ...updateStatus, state: body.status.state, automatic: body.status.automatic, last_cleanup: body.status.last_cleanup, download: body.status.download };
+      if (response.ok && body.status && updateStatus) updateStatus = { ...updateStatus, state: body.status.state, automatic: body.status.automatic, last_cleanup: body.status.last_cleanup, download: body.status.download, last_diagnostic: body.status.last_diagnostic };
     } catch { /* 状态轮询失败时保留已显示的设置。 */ }
     finally { updateStatusPolling = false; }
+  }
+
+  // 中文说明：诊断下载沿用登录令牌，独立于更新操作；状态损坏或更新失败时也保留导出入口。
+  async function exportUpdateDiagnostics() {
+    if (updateDiagnosticsExporting) return;
+    updateDiagnosticsExporting = true;
+    updateDiagnosticsMessage = '';
+    try {
+      const response = await apiFetch('/api/v1/update/diagnostics', { cache: 'no-store' });
+      if (!response.ok) {
+        const body = await response.json() as { error?: string };
+        throw new Error(body.error || `诊断导出失败（HTTP ${response.status}）`);
+      }
+      if (!response.headers.get('Content-Type')?.startsWith('application/zip')) throw new Error('诊断包格式不正确，请尝试启动器离线导出。');
+      const filename = response.headers.get('Content-Disposition')?.match(/filename="(codex-chronicle-diagnostics-[a-zA-Z0-9_.-]+\.zip)"/)?.[1] || 'codex-chronicle-diagnostics.zip';
+      const objectURL = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = objectURL;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 60_000);
+      updateDiagnosticsMessage = '诊断包已生成，请检查后主动分享给开发者。';
+    } catch (error) {
+      updateDiagnosticsMessage = error instanceof Error ? error.message : '诊断导出失败，请尝试启动器离线导出。';
+    } finally {
+      updateDiagnosticsExporting = false;
+    }
   }
 
   async function setAutomaticUpdate(control: HTMLInputElement) {
@@ -5340,7 +5372,8 @@
       {:else}
         <div class="settings-unavailable">当前服务尚未提供更新配置。</div>
       {/if}
-
+      <button class="secondary-button" on:click={exportUpdateDiagnostics} disabled={updateDiagnosticsExporting} title={updateStatus?.last_diagnostic ? `最近故障：${updateStatus.last_diagnostic.code || updateStatus.last_diagnostic.stage} · ${updateStatus.last_diagnostic.id}` : '生成本地诊断包，包含脱敏的更新记录，不含对话或数据库'}>{updateDiagnosticsExporting ? '正在生成诊断包…' : '导出更新诊断'}</button>
+      {#if updateDiagnosticsMessage}<small class="copy-note" role="status">{updateDiagnosticsMessage}</small>{/if}
         </SettingsPanel>
       {/if}
     </SettingsPage>

@@ -24,7 +24,12 @@ type CleanupResult struct {
 const CleanupGracePeriod = 24 * time.Hour
 
 // ConfirmRunning 只由已核验实际进程的启动器调用；预检、版本切换和旧后台都不能触发清理。
-func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (CleanupResult, error) {
+func (m *Manager) ConfirmRunning(ctx context.Context, runningVersion string) (result CleanupResult, err error) {
+	if m == nil {
+		return CleanupResult{}, errors.New("更新管理器未初始化")
+	}
+	finish := BeginDiagnostic(m.root, "confirm_cleanup", runningVersion)
+	defer func() { finish(err) }()
 	return m.confirmRunningAt(ctx, runningVersion, time.Now().UTC())
 }
 

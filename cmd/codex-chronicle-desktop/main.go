@@ -16,6 +16,7 @@ import (
 
 	"codex-chronicle.local/internal/desktop"
 	"codex-chronicle.local/internal/desktopui"
+	updatepkg "codex-chronicle.local/internal/update"
 )
 
 var version = "0.0.0-dev"
@@ -31,6 +32,7 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "启动后只输出地址，不打开浏览器或菜单栏")
 	background := flag.Bool("background", false, "登录自启动：显示菜单栏或托盘，不主动打开网页")
 	startupSettings := flag.Bool("startup-settings", false, "直接打开端口设置，无需后台成功启动")
+	exportDiagnostics := flag.String("export-diagnostics", "", "离线导出脱敏更新诊断 ZIP 到新文件；无需启动后台，不覆盖现有文件")
 	status := flag.Bool("status", false, "核对并显示已有后台实例，不启动新进程")
 	quit := flag.Bool("quit", false, "等待任务完成并退出已有后台；不会强制终止")
 	verify := flag.Bool("verify", false, "使用空白隔离目录验证此安装包的启动、版本和安全退出")
@@ -51,7 +53,7 @@ func main() {
 	explicitDataDir := *dataDir
 	var executable string
 	fatal := func(err any) {
-		if !*noBrowser && !*status && !*quit && !*verify && !*startupCheck && !*activate && !*printVersion {
+		if !*noBrowser && !*status && !*quit && !*verify && !*startupCheck && !*activate && !*printVersion && *exportDiagnostics == "" {
 			if executable != "" && *dataDir != "" {
 				desktopui.ShowStartupError(fmt.Sprint(err), executable, *dataDir, *packageRoot)
 			} else {
@@ -85,6 +87,14 @@ func main() {
 	*packageRoot, err = filepath.Abs(*packageRoot)
 	if err != nil {
 		fatal(err)
+	}
+	if *exportDiagnostics != "" {
+		id, err := updatepkg.WriteDiagnosticsFile(context.Background(), filepath.Join(*dataDir, "updates"), version, *exportDiagnostics)
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Printf("诊断包已保存：%s\n诊断编号：%s\n仅在本地生成，请检查后主动分享给开发者。\n", *exportDiagnostics, id)
+		return
 	}
 	if *startupSettings {
 		desktopui.Settings(executable, *dataDir, *packageRoot)

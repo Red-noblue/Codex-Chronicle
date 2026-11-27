@@ -4,6 +4,7 @@ from contextlib import closing
 import hashlib
 from datetime import datetime, timedelta, timezone
 import http.server
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 
 def run(arguments, **kwargs):
@@ -252,10 +254,29 @@ func main(){
         assert not (profile / "updates/restart-journal.json").exists(), "启动失败恢复后遗留事务"
         print("通过：候选预检通过但真实启动失败，已自动恢复旧版本、数据库和设置，并抑制失败版本", flush=True)
 
+        with opener.open(address + "/api/v1/update/diagnostics", timeout=15) as response:
+            assert response.headers["Content-Type"] == "application/zip"
+            online_diagnostics = response.read()
+        with zipfile.ZipFile(io.BytesIO(online_diagnostics)) as archive:
+            assert set(archive.namelist()) == {"report.json", "update-events.json"}
+            events = json.loads(archive.read("update-events.json"))
+            assert any(e["stage"] == "restart" and e["result"] == "failed" and e.get("id") for e in events), events
+            assert any(e["stage"] == "restore_snapshot" and e["result"] == "succeeded" for e in events), events
+            assert any(e["stage"] == "restore_version" and e["result"] == "succeeded" for e in events), events
+            assert str(profile) not in archive.read("report.json").decode(), "诊断泄露用户路径"
+        print("通过：实际启动失败与自动恢复均留下故障编号、阶段与结果，网页可下载脱敏诊断包", flush=True)
+
         stop()
+        offline_diagnostics = scratch / "offline-diagnostics.zip"
+        run([launcher, "--data-dir", profile, "--export-diagnostics", offline_diagnostics], env=environment)
+        with zipfile.ZipFile(offline_diagnostics) as archive:
+            assert json.loads(archive.read("report.json"))["format_version"] == 1
+            assert any(e["stage"] == "restart" and e["result"] == "failed" for e in json.loads(archive.read("update-events.json")))
+        print("通过：后台已停止时启动器仍能离线导出", flush=True)
         later, _, _ = package(later_version, "new-installer", "/stable.json")
         launcher = later / ("bin/codex-chronicle-desktop" + suffix)
-        assert launch(launcher)["version"] == later_version
+        installed_instance = launch(launcher)
+        assert installed_instance["version"] == later_version, {"instance": installed_instance, "update": request("/api/v1/update/status")["status"], "events": json.loads((profile / "updates/diagnostic-events.json").read_text())[-12:]}
         state = request("/api/v1/update/status")["status"]["state"]
         assert state["installed_version"] == later_version and state["previous_version"] == old_version
         assert (profile / "updates/versions" / new_version).exists(), "观察期内提前清理了旧版本"
@@ -282,6 +303,8 @@ func main(){
         assert not (profile / "updates/versions" / new_version).exists(), "观察期结束仍保留无用历史版本"
         assert not (profile / "updates/versions/1.0.1").exists(), "失败版本未在恢复窗口结束后清理"
         assert Path(bad_plan["bundle_root"]).is_dir() and new_archive.is_file(), "清理影响待处理计划或外部安装包"
+        retained_events = json.loads((profile / "updates/diagnostic-events.json").read_text())
+        assert any(e["stage"] == "restart" and e["result"] == "failed" for e in retained_events), "安装包清理丢失失败诊断"
         stop()
         print("通过：恢复窗口到期后清理历史安装包与旧版本，关闭自动更新不影响清理，保留待处理计划与外部离线包", flush=True)
 

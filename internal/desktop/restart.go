@@ -157,6 +157,10 @@ func RestartAfterUpdate(ctx context.Context, options LaunchOptions, instanceID, 
 	if err := trialUpdate(ctx, options, root, instance.Version, targetVersion); err != nil {
 		return err
 	}
+	// 无界面候选已经运行并确认健康，无需再次启动入口；延迟入口可能在用户退出后重开后台。
+	if options.NoBrowser {
+		return nil
+	}
 	options.PackageRoot = root
 	args := []string{"--data-dir", options.DataDir, "--package-root", root}
 	if options.NoBrowser {

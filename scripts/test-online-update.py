@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 
 def run(arguments, **kwargs):
@@ -192,16 +193,35 @@ try{
  if(process.env.CHRONICLE_TEST_PROGRESS_SCREENSHOT){const fs=await import('node:fs/promises');const shot=await b.send('Page.captureScreenshot',{format:'png'});await fs.writeFile(process.env.CHRONICLE_TEST_PROGRESS_SCREENSHOT,Buffer.from(shot.data,'base64'));}
  await fetch(process.env.CHRONICLE_TEST_FEED_URL+'/continue');
  await b.waitFor('document.querySelector(".update-plan")',60000);
+ if(process.env.CHRONICLE_TEST_DIAGNOSTICS_DIR){
+  await b.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:process.env.CHRONICLE_TEST_DIAGNOSTICS_DIR});
+  await b.evaluate(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='导出更新诊断').click()`);
+  await b.waitFor(`[...document.querySelectorAll('[role="status"]')].some(e=>e.textContent.includes('诊断包已生成'))`);
+  const fs=await import('node:fs/promises');
+  let downloaded=false;
+  for(let i=0;i<50;i++){
+   const files=await fs.readdir(process.env.CHRONICLE_TEST_DIAGNOSTICS_DIR);
+   if(files.some(name=>name.startsWith('codex-chronicle-diagnostics-')&&name.endsWith('.zip'))){downloaded=true;break}
+   await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  if(!downloaded)throw Error('网页提示导出成功，但未下载诊断包');
+ }
  if(b.events.some(e=>e.method==='Runtime.exceptionThrown'))throw Error('更新页面有运行异常');
  await b.screenshot('online-update-isolated');
 }finally{await fetch(process.env.CHRONICLE_TEST_FEED_URL+'/continue').catch(()=>{});await b.close()}
 '''
-            run(["node", "--input-type=module", "-e", script], cwd=project, env=dict(environment, CHRONICLE_TEST_UPDATE_UI_URL=address, CHRONICLE_TEST_FEED_URL=f"http://127.0.0.1:{feed.server_port}"))
+            diagnostics_dir = scratch / "browser-diagnostics"
+            diagnostics_dir.mkdir()
+            run(["node", "--input-type=module", "-e", script], cwd=project, env=dict(environment, CHRONICLE_TEST_UPDATE_UI_URL=address, CHRONICLE_TEST_FEED_URL=f"http://127.0.0.1:{feed.server_port}", CHRONICLE_TEST_DIAGNOSTICS_DIR=str(diagnostics_dir)))
+            diagnostics_files = list(diagnostics_dir.glob("codex-chronicle-diagnostics-*.zip"))
+            assert len(diagnostics_files) == 1, "浏览器未保存唯一诊断包"
+            with zipfile.ZipFile(diagnostics_files[0]) as diagnostics:
+                assert set(diagnostics.namelist()) == {"report.json", "update-events.json"}
             slow_download.clear()
             plans = request("/api/v1/update/status")["status"]["pending_plan_ids"]
             assert len(plans) == 1
             plan_id = plans[0]
-            print("通过：真实浏览器显示下载字节进度、布局不溢出，下载并预检生成计划，无前端运行异常", flush=True)
+            print("通过：真实浏览器显示下载字节进度、布局不溢出，下载并预检生成计划，实际保存诊断 ZIP，无前端运行异常", flush=True)
         else:
             plan_id = request("/api/v1/update/prepare-online", {}, 201)["plan"]["id"]
         activated = request("/api/v1/update/activate", {"plan_id": plan_id})["result"]

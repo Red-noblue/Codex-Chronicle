@@ -99,7 +99,9 @@ func restartProfilePathsFrom(data, registryPath string) ([]string, error) {
 	return result, nil
 }
 
-func snapshotRestartProfile(data string, j *restartJournal) error {
+func snapshotRestartProfile(data string, j *restartJournal) (err error) {
+	finish := updatepkg.BeginDiagnostic(filepath.Join(data, "updates"), "snapshot", j.Version)
+	defer func() { finish(err) }()
 	return snapshotRestartProfileWithSpaceCheck(data, j, updatepkg.RequireDiskSpace)
 }
 
@@ -169,7 +171,9 @@ func finishRestartJournal(data string, j restartJournal) error {
 	return nil
 }
 
-func trialUpdate(ctx context.Context, options LaunchOptions, root, previous, target string) error {
+func trialUpdate(ctx context.Context, options LaunchOptions, root, previous, target string) (err error) {
+	finish := updatepkg.BeginDiagnostic(filepath.Join(options.DataDir, "updates"), "restart", target)
+	defer func() { finish(err) }()
 	manager, err := updateManager(options)
 	if err != nil {
 		return err
@@ -238,7 +242,9 @@ func trialUpdate(ctx context.Context, options LaunchOptions, root, previous, tar
 	return finishRestartJournal(options.DataDir, j)
 }
 
-func launchPausedVersion(ctx context.Context, options LaunchOptions, root, target string) (Instance, error) {
+func launchPausedVersion(ctx context.Context, options LaunchOptions, root, target string) (instance Instance, err error) {
+	finish := updatepkg.BeginDiagnostic(filepath.Join(options.DataDir, "updates"), "startup_health", target)
+	defer func() { finish(err) }()
 	// 使用候选自身入口，继承候选构建内置的更新渠道，不能注入旧启动器的 feed。
 	args := []string{"--startup-check", "--no-browser", "--data-dir", options.DataDir, "--package-root", root}
 	if !options.AutoPort && options.Address != "" {
@@ -248,10 +254,14 @@ func launchPausedVersion(ctx context.Context, options LaunchOptions, root, targe
 		args = append(args, "--scan-root", options.ScanRoot)
 	}
 	command := exec.CommandContext(ctx, filepath.Join(root, "bin", ExecutableName("codex-chronicle-desktop")), args...)
-	if err := command.Run(); err != nil {
+	if _, err := command.Output(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) != 0 {
+			return Instance{}, fmt.Errorf("候选启动器失败：%w：%s", err, exit.Stderr[:min(len(exit.Stderr), 4096)])
+		}
 		return Instance{}, err
 	}
-	instance, err := Running(ctx, options.DataDir)
+	instance, err = Running(ctx, options.DataDir)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -295,6 +305,10 @@ func launchRecoveredVersion(ctx context.Context, options LaunchOptions) error {
 	if _, err := manager.ConfirmRunning(ctx, instance.Version); err != nil {
 		return err
 	}
+	// 无界面恢复已完成，重复拉起入口会与紧随其后的退出或安装发生竞态。
+	if options.NoBrowser {
+		return nil
+	}
 	options.PackageRoot = root
 	args := []string{"--data-dir", options.DataDir, "--package-root", root}
 	if options.NoBrowser {
@@ -305,7 +319,7 @@ func launchRecoveredVersion(ctx context.Context, options LaunchOptions) error {
 	return startUpdateLauncher(options, args)
 }
 
-func recoverRestartJournal(ctx context.Context, options LaunchOptions) error {
+func recoverRestartJournal(ctx context.Context, options LaunchOptions) (err error) {
 	path := filepath.Join(options.DataDir, "updates", restartJournalName)
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -314,6 +328,8 @@ func recoverRestartJournal(ctx context.Context, options LaunchOptions) error {
 	if err != nil {
 		return err
 	}
+	finish := updatepkg.BeginDiagnostic(filepath.Join(options.DataDir, "updates"), "restore_snapshot", "")
+	defer func() { finish(err) }()
 	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
 		return fmt.Errorf("更新恢复记录无效")
 	}
