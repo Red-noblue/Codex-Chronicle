@@ -367,8 +367,21 @@ try{
         assert any(e["stage"] == "restart" and e["result"] == "failed" for e in retained_events), "安装包清理丢失失败诊断"
         assert any(e["stage"] == "cleanup_settings" and e["result"] == "succeeded" for e in retained_events), "修改清理期限没有留下诊断事件"
         assert request("/api/v1/update/cleanup-settings", {"retention_minutes": 1440}, method="PUT")["status"]["state"].get("cleanup_after") is None, "恢复默认时长重新开启了已结束的清理窗口"
+        previous_login_id = json.loads((profile / "runtime/instance.json").read_text())["id"]
         stop()
         print("通过：保留时长缩短为真实一分钟并跨重启持久化，后台按期清理历史包和旧版本；关闭自动更新不影响清理，保留当前版本、待处理计划、外部包和失败诊断", flush=True)
+
+        fixed_launcher = profile / ("desktop-launcher/codex-chronicle-desktop" + suffix)
+        assert fixed_launcher.is_file(), "未创建清理范围之外的固定登录启动器"
+        safe_to_cleanup = False
+        run([fixed_launcher, "--launch-active", "--no-browser", "--data-dir", profile], env=environment)
+        logged_in = await_restart(previous_login_id, old_version)
+        assert logged_in["version"] == old_version
+        with closing(sqlite3.connect(profile / "archive.db")) as database:
+            assert database.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            assert database.execute("SELECT value FROM installed_update_marker").fetchone()[0] == "跨版本保留"
+        stop()
+        print("通过：升级、人工回滚和清理历史版本后，固定登录入口仍能验签并启动当前版本，数据记录保留", flush=True)
 
         legacy_ref = os.environ.get("CHRONICLE_TEST_LEGACY_REF", "")
         if legacy_ref:

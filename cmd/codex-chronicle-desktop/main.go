@@ -31,6 +31,7 @@ func main() {
 	scanRoot := flag.String("scan-root", "", "首次只读扫描目录；省略时自动发现用户 Codex 目录")
 	noBrowser := flag.Bool("no-browser", false, "启动后只输出地址，不打开浏览器或菜单栏")
 	background := flag.Bool("background", false, "登录自启动：显示菜单栏或托盘，不主动打开网页")
+	launchActive := flag.Bool("launch-active", false, "登录启动专用：从固定入口验签并启动当前活动版本")
 	startupSettings := flag.Bool("startup-settings", false, "直接打开端口设置，无需后台成功启动")
 	exportDiagnostics := flag.String("export-diagnostics", "", "离线导出脱敏更新诊断 ZIP 到新文件；无需启动后台，不覆盖现有文件")
 	status := flag.Bool("status", false, "核对并显示已有后台实例，不启动新进程")
@@ -123,6 +124,12 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if *launchActive {
+		if err := desktop.LaunchActiveFromLogin(ctx, executable, *dataDir, *noBrowser); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if *installApp != "" {
 		if err := desktop.InstallMacApp(ctx, *installApp, *installTarget, *dataDir, os.Stdout); err != nil {
 			log.Fatal(err)
@@ -194,6 +201,9 @@ func main() {
 	}
 	if *startupCheck {
 		if err := instance.CheckHealth(ctx); err != nil {
+			log.Fatal(err)
+		}
+		if err := desktop.PrepareLoginLauncher(ctx, desktop.LaunchOptions{PackageRoot: *packageRoot, DataDir: *dataDir, ExpectedVersion: version}); err != nil {
 			log.Fatal(err)
 		}
 	}

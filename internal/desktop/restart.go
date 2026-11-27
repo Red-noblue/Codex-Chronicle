@@ -187,6 +187,9 @@ func ConfirmUpdateLaunch(ctx context.Context, options LaunchOptions, instance In
 	}
 	manager, err := updateManager(options)
 	if err == nil {
+		if err := PrepareLoginLauncher(ctx, options); err != nil {
+			return err
+		}
 		_, err = manager.ConfirmRunning(ctx, instance.Version)
 	}
 	return err

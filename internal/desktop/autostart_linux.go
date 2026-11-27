@@ -2,7 +2,6 @@
 package desktop
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +32,7 @@ func desktopExecArgument(value string) (string, error) {
 }
 
 func linuxLoginEntry(executable, dataDir, packageRoot string, enabled bool) ([]byte, error) {
-	arguments := []string{executable, "--background", "--data-dir", dataDir, "--package-root", packageRoot}
+	arguments := loginArguments(executable, dataDir, packageRoot)
 	for i, argument := range arguments {
 		quoted, err := desktopExecArgument(argument)
 		if err != nil {
@@ -67,8 +66,10 @@ func AutostartEnabled(executable, dataDir, packageRoot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	expected, err := linuxLoginEntry(executable, dataDir, packageRoot, true)
-	return bytes.Equal(data, expected), err
+	return matchesLoginEntry(string(data), dataDir, func(entry, root string) (string, error) {
+		body, err := linuxLoginEntry(entry, dataDir, root, true)
+		return string(body), err
+	}, executable, packageRoot)
 }
 
 func SetAutostart(executable, dataDir, packageRoot string, enabled bool) error {

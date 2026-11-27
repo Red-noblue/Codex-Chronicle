@@ -2,6 +2,7 @@
 package desktop
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -14,5 +15,22 @@ func TestWindowsLoginCommand(t *testing.T) {
 	want := []string{executable, "--background", "--data-dir", data, "--package-root", payload}
 	if err != nil || !reflect.DeepEqual(arguments, want) {
 		t.Fatalf("登录启动参数错误：%q %v", arguments, err)
+	}
+}
+
+func TestWindowsStableLoginCommandAndLegacyMigration(t *testing.T) {
+	data := t.TempDir()
+	entry := loginLauncherPath(data)
+	arguments, err := windows.DecomposeCommandLine(loginCommand(entry, data, ""))
+	if err != nil || !reflect.DeepEqual(arguments, []string{entry, "--background", "--data-dir", data, "--launch-active"}) {
+		t.Fatalf("固定登录命令仍然依赖版本目录：%v %v", arguments, err)
+	}
+	old := filepath.Join(data, "updates", "versions", "0.1.0-preview.19")
+	saved := loginCommand(filepath.Join(old, "bin", ExecutableName("codex-chronicle-desktop")), data, old)
+	matched, err := matchesLoginEntry(saved, data, func(executable, root string) (string, error) {
+		return loginCommand(executable, data, root), nil
+	}, entry, "")
+	if err != nil || !matched {
+		t.Fatalf("没有识别旧版已启用的登录命令：%v %v", matched, err)
 	}
 }

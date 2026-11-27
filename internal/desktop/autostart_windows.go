@@ -12,7 +12,7 @@ const loginRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 const loginRegistryName = "CodexChronicle"
 
 func loginCommand(executable, dataDir, packageRoot string) string {
-	return windows.ComposeCommandLine([]string{executable, "--background", "--data-dir", dataDir, "--package-root", packageRoot})
+	return windows.ComposeCommandLine(loginArguments(executable, dataDir, packageRoot))
 }
 
 func AutostartEnabled(executable, dataDir, packageRoot string) (bool, error) {
@@ -28,7 +28,12 @@ func AutostartEnabled(executable, dataDir, packageRoot string) (bool, error) {
 	if errors.Is(err, registry.ErrNotExist) {
 		return false, nil
 	}
-	return value == loginCommand(executable, dataDir, packageRoot), err
+	if err != nil {
+		return false, err
+	}
+	return matchesLoginEntry(value, dataDir, func(entry, root string) (string, error) {
+		return loginCommand(entry, dataDir, root), nil
+	}, executable, packageRoot)
 }
 
 func SetAutostart(executable, dataDir, packageRoot string, enabled bool) error {
