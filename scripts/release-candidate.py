@@ -129,7 +129,7 @@ def gh(arguments, *, body=None, missing=False):
     if result.returncode:
         if missing and "(HTTP 404)" in result.stderr:
             return None
-        raise ValueError("GitHub 操作失败：" + result.stderr.strip())
+        raise ValueError("GitHub 操作失败（" + " ".join(arguments[:2]) + "）：" + result.stderr.strip())
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
@@ -218,18 +218,40 @@ def verify_channel_order(repository, version):
         raise ValueError("目标版本已经落后或已被撤回，停止公开")
 
 
+def dispatch_publish(run_id, version, repository, expected_digest):
+    # 管理设置只由本机操作者读取；不把个人管理令牌交给发布工作流。
+    if os.environ.get("GITHUB_ACTIONS") == "true" or not run_id or not DIGEST.fullmatch(expected_digest):
+        raise ValueError("请在本机指定成功候选编号和完整 SHA-256 派发发布")
+    prefix = "repos/" + repository
+    if gh(["api", prefix + "/immutable-releases"]).get("enabled") is not True:
+        raise ValueError("仓库未启用不可变发布，停止派发")
+    selected = select_from_github(run_id, version, repository, publishing=True)
+    commit, tag = selected["source_commit"], "v" + version
+    if gh(["api", f"{prefix}/compare/{commit}...main"]).get("status") not in ("ahead", "identical"):
+        raise ValueError("候选提交不在当前 main 历史中")
+    verify_channel_order(repository, version)
+    existing = resolve_tag(repository, tag)
+    if existing is not None and existing != commit:
+        raise ValueError("同名版本标签指向其他提交，禁止移动标签")
+    if existing is None:
+        gh(["api", prefix + "/git/refs", "--method", "POST"], body={"ref": "refs/tags/" + tag, "sha": commit})
+    gh(["api", prefix + "/actions/workflows/package-preview.yml/dispatches", "--method", "POST"], body={
+        "ref": "main", "inputs": {"operation": "publish", "version": version, "candidate_run_id": str(run_id),
+        "candidate_sha256": expected_digest, "immutable_releases_confirmed": True}})
+
+
 def publish(root, manifest, selection, expected_digest):
     repository, version = manifest["repository"], manifest["version"]
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_REPOSITORY") != repository:
         raise ValueError("公开发布只能从本仓库 main 的受控工作流执行")
+    if os.environ.get("CHRONICLE_IMMUTABLE_RELEASES_CONFIRMED") != "true":
+        raise ValueError("发布操作者尚未核验仓库不可变设置，请先在本机运行 dispatch-publish")
     latest = select_from_github(selection["run_id"], version, repository, publishing=True)
     if latest != selection:
         raise ValueError("验收后候选记录发生变化，停止发布")
     manifest = verify(root, version, repository, expected_digest, selection)
     verify_attestation(root, selection)
     prefix, commit, tag = "repos/" + repository, manifest["source_commit"], "v" + version
-    if gh(["api", prefix + "/immutable-releases"]).get("enabled") is not True:
-        raise ValueError("仓库未启用不可变发布，停止公开版本")
     comparison = gh(["api", f"{prefix}/compare/{commit}...main"])
     if comparison.get("status") not in ("ahead", "identical"):
         raise ValueError("候选提交不在当前 main 历史中")
@@ -238,11 +260,12 @@ def publish(root, manifest, selection, expected_digest):
     if existing is not None and existing != commit:
         raise ValueError("同名版本标签指向其他提交，禁止移动标签")
     if existing is None:
-        gh(["api", prefix + "/git/refs", "--method", "POST"], body={"ref": "refs/tags/" + tag, "sha": commit})
+        raise ValueError("缺少已核验的版本标签，请先在本机运行 dispatch-publish")
     release = gh(["api", f"{prefix}/releases/tags/{tag}"], missing=True)
     preview = manifest["channel"] == "preview"
     if release is None:
-        release = gh(["api", prefix + "/releases", "--method", "POST"], body={"tag_name": tag, "target_commitish": commit, "name": "Codex Chronicle " + version,
+        # 标签已绑定冻结源码；省略无效的 target_commitish，避免为历史候选额外申请 workflows 写权限。
+        release = gh(["api", prefix + "/releases", "--method", "POST"], body={"tag_name": tag, "name": "Codex Chronicle " + version,
                       "body": manifest["release_notes"], "draft": True, "prerelease": preview})
     expected = {path.name: path for path in root.iterdir()}
     present = {asset["name"]: asset for asset in release.get("assets", [])}
@@ -275,7 +298,7 @@ def publish(root, manifest, selection, expected_digest):
 
 def main():
     parser = argparse.ArgumentParser(description="冻结、验证和推广同一份已验收的 GitHub 发布候选")
-    parser.add_argument("command", choices=("seal", "select", "verify", "publish"))
+    parser.add_argument("command", choices=("seal", "select", "verify", "dispatch-publish", "publish"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--root", type=Path, default=Path("publish"))
@@ -303,6 +326,9 @@ def main():
                 raise ValueError("发布说明尚未纳入版本管理")
             digest = seal(args.root, args.version, args.repository, args.commit, args.run_id or 0, args.attempt or 0, notes_path.read_text(encoding="utf-8"))
             print("candidate_sha256=" + digest)
+        elif args.command == "dispatch-publish":
+            dispatch_publish(args.run_id, args.version, args.repository, args.expected_sha256)
+            print("已核验仓库设置、固定候选标签并派发同包发布")
         elif args.command == "select":
             if not args.run_id or args.selection is None:
                 raise ValueError("选择候选必须指定构建编号和 selection 文件")

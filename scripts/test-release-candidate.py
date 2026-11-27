@@ -42,6 +42,9 @@ class CandidateTests(unittest.TestCase):
         self.digest = candidate.seal(self.output, self.version, self.repository, self.commit, 123, 1, "已审核的测试发布说明")
         self.selection = {"repository": self.repository, "version": self.version, "source_commit": self.commit,
                           "source_branch": "main", "run_id": 123, "run_attempt": 1, "artifact_id": 456, "artifact_digest": "sha256:" + "b" * 64}
+        confirmation = patch.dict(os.environ, {"CHRONICLE_IMMUTABLE_RELEASES_CONFIRMED": "true"})
+        confirmation.start()
+        self.addCleanup(confirmation.stop)
 
     def verify(self, digest=None):
         return candidate.verify(self.output, self.version, self.repository, digest or self.digest, self.selection)
@@ -123,7 +126,6 @@ class CandidateTests(unittest.TestCase):
                                "digest": "sha256:" + candidate.release_feed.file_digest(p)} for p in self.output.iterdir()]}
         def api(args, **kwargs):
             endpoint = args[1]
-            if endpoint.endswith("/immutable-releases"): return {"enabled": True}
             if "/compare/" in endpoint: return {"status": "ahead"}
             if "/contents/" in endpoint: return None
             if "/git/ref/" in endpoint: return {"object": {"type": "commit", "sha": self.commit}}
@@ -148,7 +150,6 @@ class CandidateTests(unittest.TestCase):
                 written = []
                 def api(args, **kwargs):
                     endpoint = args[1]
-                    if endpoint.endswith("/immutable-releases"): return {"enabled": True}
                     if "/compare/" in endpoint: return {"status": "ahead"}
                     if "/contents/" in endpoint: return None
                     if "/git/ref/" in endpoint: return {"object": {"type": "commit", "sha": self.commit}}
@@ -181,6 +182,85 @@ class CandidateTests(unittest.TestCase):
                             result = candidate.publish(self.output, self.verify(), self.selection, self.digest)
                             self.assertTrue(result["immutable"])
                             self.assertEqual(len(written), 1)
+
+
+    def test_operator_dispatch_checks_administration_locally_and_reserves_exact_tag(self):
+        writes = []
+        def api(args, **kwargs):
+            endpoint = args[1]
+            if endpoint.endswith("/immutable-releases"): return {"enabled": True}
+            if "/compare/" in endpoint: return {"status": "ahead"}
+            if "/contents/" in endpoint: return None
+            if "/git/ref/" in endpoint: return None
+            if endpoint.endswith("/git/refs"):
+                self.assertEqual(kwargs["body"], {"ref": "refs/tags/v" + self.version, "sha": self.commit})
+                writes.append("tag")
+                return {}
+            if endpoint.endswith("/dispatches"):
+                self.assertEqual(writes, ["tag"])
+                inputs = kwargs["body"]["inputs"]
+                self.assertEqual(inputs["candidate_sha256"], self.digest)
+                self.assertEqual(inputs["candidate_run_id"], "123")
+                self.assertIs(inputs["immutable_releases_confirmed"], True)
+                writes.append("dispatch")
+                return None
+            self.fail("未预期的发布入口请求：" + str(args))
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}), patch.object(candidate, "gh", side_effect=api), patch.object(candidate, "select_from_github", return_value=self.selection):
+            candidate.dispatch_publish(123, self.version, self.repository, self.digest)
+        self.assertEqual(writes, ["tag", "dispatch"])
+
+    def test_operator_dispatch_never_overrides_disabled_immutability_or_conflicting_tag(self):
+        for scenario in ("disabled", "permission", "tag-conflict", "outside-main"):
+            def api(args, **kwargs):
+                endpoint = args[1]
+                self.assertNotIn("body", kwargs, "安全检查失败前不应写入")
+                if endpoint.endswith("/immutable-releases"):
+                    if scenario == "permission": raise ValueError("HTTP 403")
+                    return {"enabled": scenario != "disabled"}
+                if "/compare/" in endpoint: return {"status": "diverged" if scenario == "outside-main" else "ahead"}
+                if "/contents/" in endpoint: return None
+                if "/git/ref/" in endpoint: return {"object": {"type": "commit", "sha": "f" * 40}}
+                self.fail("失败前不应触发其他请求")
+            with self.subTest(scenario=scenario), patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}), patch.object(candidate, "gh", side_effect=api), patch.object(candidate, "select_from_github", return_value=self.selection), self.assertRaises(ValueError):
+                candidate.dispatch_publish(123, self.version, self.repository, self.digest)
+
+    def test_ci_publish_requires_operator_confirmation_without_administration_access(self):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": self.repository, "CHRONICLE_IMMUTABLE_RELEASES_CONFIRMED": "false"}), patch.object(candidate, "gh") as api, self.assertRaises(ValueError):
+            candidate.publish(self.output, self.verify(), self.selection, self.digest)
+        api.assert_not_called()
+
+    def test_ci_never_creates_a_missing_tag_or_requires_workflow_write_for_existing_tag(self):
+        release = {"id": 7, "tag_name": "v" + self.version, "draft": True, "immutable": False,
+                   "prerelease": True, "body": "已审核的测试发布说明", "assets": []}
+        for missing_tag in (True, False):
+            writes = []
+            def api(args, **kwargs):
+                endpoint = args[1]
+                if "/compare/" in endpoint: return {"status": "ahead"}
+                if "/contents/" in endpoint: return None
+                if "/git/ref/" in endpoint: return None if missing_tag else {"object": {"type": "commit", "sha": self.commit}}
+                if "/releases/tags/" in endpoint: return None
+                if endpoint.endswith("/releases"):
+                    self.assertNotIn("target_commitish", kwargs["body"])
+                    writes.append("draft")
+                    return copy.deepcopy(release)
+                if endpoint.endswith("/releases/7"):
+                    if kwargs.get("body"):
+                        release.update(draft=False, immutable=True)
+                        writes.append("publish")
+                    return copy.deepcopy(release)
+                self.fail("CI 不应读取管理设置或写入工作流标签：" + str(args))
+            def upload(args, **kwargs):
+                release["assets"] = [{"name": p.name, "state": "uploaded", "size": p.stat().st_size,
+                                      "digest": "sha256:" + candidate.release_feed.file_digest(p)} for p in self.output.iterdir()]
+                return subprocess.CompletedProcess(args, 0, "", "")
+            with self.subTest(missing_tag=missing_tag), patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": self.repository}), patch.object(candidate, "select_from_github", return_value=self.selection), patch.object(candidate, "verify_attestation"), patch.object(candidate, "gh", side_effect=api), patch.object(candidate.subprocess, "run", side_effect=upload):
+                if missing_tag:
+                    with self.assertRaises(ValueError):candidate.publish(self.output, self.verify(), self.selection, self.digest)
+                    self.assertEqual(writes, [])
+                else:
+                    self.assertTrue(candidate.publish(self.output, self.verify(), self.selection, self.digest)["immutable"])
+                    self.assertEqual(writes, ["draft", "publish"])
 
 
 if __name__ == "__main__":
