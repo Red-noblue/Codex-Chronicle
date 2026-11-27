@@ -171,6 +171,22 @@ void chronicleShowError(const char *message) {
         showMessage(@"Codex Chronicle 暂时无法打开", [NSString stringWithUTF8String:message]);
     }
 }
+void chronicleInstallRequired(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = NSAlertStyleInformational;
+        alert.messageText = @"请先安装 Codex Chronicle";
+        alert.informativeText = @"请将磁盘窗口中的 Codex Chronicle 拖入旁边的“应用程序”文件夹，再从“应用程序”打开。安装和启动都不需要终端。";
+        [alert addButtonWithTitle:@"打开应用程序文件夹"];
+        [alert addButtonWithTitle:@"稍后"];
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:@"/Applications" isDirectory:YES]];
+        }
+    }
+}
 void chronicleSettings(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];

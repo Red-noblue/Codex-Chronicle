@@ -71,6 +71,20 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	// 在初始化用户目录前拦住磁盘镜像内的直接启动；诊断、安装器和只读验证仍可运行。
+	if !*status && !*quit && !*verify && !*startupCheck && !*activate && !*startupSettings && *exportDiagnostics == "" && *installApp == "" && *restartInstance == "" {
+		required, err := desktop.DragInstallRequired(executable)
+		if err != nil {
+			fatal(err)
+		}
+		if required {
+			if *noBrowser || *background {
+				log.Fatal("请先将 Codex Chronicle 拖入应用程序文件夹，再从已安装的位置打开")
+			}
+			desktopui.ShowInstallRequired()
+			return
+		}
+	}
 	if *packageRoot == "" {
 		*packageRoot = desktop.PackageRoot(executable)
 	}

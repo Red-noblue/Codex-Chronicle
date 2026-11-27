@@ -95,8 +95,8 @@ if [[ "$chronicle_os" == darwin ]]; then
   fi
   mkdir "$chronicle_temp/dmg"
   ditto "$chronicle_app" "$chronicle_temp/dmg/Codex Chronicle.app"
-  cp packaging/macos/安装或更新.command "$chronicle_temp/dmg/安装或更新.command"
-  chmod +x "$chronicle_temp/dmg/安装或更新.command"
+  # 仅在 DMG 安装界面提供标准拖放目标；应用与更新载荷内部仍禁止符号链接。
+  ln -s /Applications "$chronicle_temp/dmg/应用程序"
   chronicle_dmg="$chronicle_output/Codex-Chronicle-$chronicle_version-macOS-$chronicle_arch.dmg"
   hdiutil create -quiet -volname 'Codex Chronicle' -srcfolder "$chronicle_temp/dmg" -format UDZO "$chronicle_dmg"
   if [[ -n "${CHRONICLE_NOTARY_PROFILE:-}" ]]; then
@@ -105,6 +105,9 @@ if [[ "$chronicle_os" == darwin ]]; then
     xcrun stapler staple "$chronicle_dmg"
   fi
   hdiutil verify -quiet "$chronicle_dmg"
+  if [[ "$chronicle_arch" == "$(go env GOARCH)" ]]; then
+    python3 scripts/test-macos-dmg.py "$chronicle_dmg" "$chronicle_version"
+  fi
 fi
 (
   cd "$chronicle_output"
