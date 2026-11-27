@@ -305,6 +305,10 @@ func launchRecoveredVersion(ctx context.Context, options LaunchOptions) error {
 	if _, err := manager.ConfirmRunning(ctx, instance.Version); err != nil {
 		return err
 	}
+	// 无界面恢复已完成，重复拉起入口会与紧随其后的退出或安装发生竞态。
+	if options.NoBrowser {
+		return nil
+	}
 	options.PackageRoot = root
 	args := []string{"--data-dir", options.DataDir, "--package-root", root}
 	if options.NoBrowser {

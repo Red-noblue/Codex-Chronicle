@@ -275,7 +275,8 @@ func main(){
         print("通过：后台已停止时启动器仍能离线导出", flush=True)
         later, _, _ = package(later_version, "new-installer", "/stable.json")
         launcher = later / ("bin/codex-chronicle-desktop" + suffix)
-        assert launch(launcher)["version"] == later_version
+        installed_instance = launch(launcher)
+        assert installed_instance["version"] == later_version, {"instance": installed_instance, "update": request("/api/v1/update/status")["status"], "events": json.loads((profile / "updates/diagnostic-events.json").read_text())[-12:]}
         state = request("/api/v1/update/status")["status"]["state"]
         assert state["installed_version"] == later_version and state["previous_version"] == old_version
         assert (profile / "updates/versions" / new_version).exists(), "观察期内提前清理了旧版本"

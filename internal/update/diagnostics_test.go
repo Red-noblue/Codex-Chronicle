@@ -258,3 +258,17 @@ func TestDiagnosticsLongErrorsStayWithinReadableByteLimit(t *testing.T) {
 		t.Fatal("无法读取或丢失最近的故障记录", err)
 	}
 }
+
+func TestDiagnosticPreservesErrorAfterTimestampAndRedactsAbsolutePaths(t *testing.T) {
+	message := "候选启动器失败：2026/11/27 11:00:00 archive.db 迁移失败，日志：/Users/private-person/secret project/log"
+	redacted := redactDiagnosticText(message)
+	if !strings.Contains(redacted, "2026/11/27") || !strings.Contains(redacted, "archive.db 迁移失败") || strings.Contains(redacted, "private-person") || strings.Contains(redacted, "secret project") {
+		t.Fatal("时间戳被误当成路径，或私人路径未过滤", redacted)
+	}
+	for _, path := range []string{`open \\private-server\private-share\file: permission denied`, `open "C:\Users\private-person\file": permission denied`} {
+		redacted := redactDiagnosticText(path)
+		if strings.Contains(redacted, "private-") {
+			t.Fatal("Windows 路径未过滤", redacted)
+		}
+	}
+}

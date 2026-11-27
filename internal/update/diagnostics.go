@@ -165,13 +165,13 @@ func diagnosticErrorCode(stage string, err error) string {
 var diagnosticURL = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s<>"']+`)
 var diagnosticCredential = regexp.MustCompile(`(?i)(?:bearer\s+[a-z0-9._~+/-]+=*|gh[pousr]_[a-z0-9_]+|github_pat_[a-z0-9_]+|sk-[a-z0-9_-]+)`)
 var diagnosticSecret = regexp.MustCompile(`(?i)(authorization|proxy-authorization|access_token|refresh_token|token|password|passwd|secret|api[_-]?key)["']?\s*[:=]\s*["']?[^\s,;"'<>]+`)
-var diagnosticPath = regexp.MustCompile(`(?m)(?:[a-zA-Z]:[\\/]|/)[^\r\n<>"']*`)
+var diagnosticPath = regexp.MustCompile(`(?m)(^|[\s("':：=])(?:[a-zA-Z]:[\\/]|\\\\|/)[^\r\n<>"']*`)
 
 func redactDiagnosticText(value string) string {
 	value = diagnosticURL.ReplaceAllString(value, "[网址已隐藏]")
 	value = diagnosticCredential.ReplaceAllString(value, "[凭据已隐藏]")
 	value = diagnosticSecret.ReplaceAllString(value, "$1=[已隐藏]")
-	value = diagnosticPath.ReplaceAllString(value, "[路径已隐藏]")
+	value = diagnosticPath.ReplaceAllString(value, "${1}[路径已隐藏]")
 	value = strings.Map(func(r rune) rune {
 		if r < 32 && r != '\n' && r != '\t' {
 			return -1
