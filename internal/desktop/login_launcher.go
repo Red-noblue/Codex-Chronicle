@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	updatepkg "codex-chronicle.local/internal/update"
@@ -38,8 +39,11 @@ func LoginEntry(executable, dataDir, packageRoot string) (string, string) {
 func loginArguments(executable, dataDir, packageRoot string) []string {
 	arguments := []string{executable, "--background", "--data-dir", dataDir}
 	if executable == loginLauncherPath(dataDir) {
-		if resolved, err := filepath.EvalSymlinks(dataDir); err == nil {
-			arguments[3] = resolved
+		// Windows 更新计划绑定调用方路径，不能把 8.3 短路径静默改成长路径。
+		if runtime.GOOS != "windows" {
+			if resolved, err := filepath.EvalSymlinks(dataDir); err == nil {
+				arguments[3] = resolved
+			}
 		}
 		return append(arguments, "--launch-active")
 	}
