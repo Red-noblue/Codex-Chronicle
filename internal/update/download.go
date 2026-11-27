@@ -36,14 +36,16 @@ func sameOnlineRelease(a, b OnlineRelease) bool {
 	return a.Version == b.Version && a.BuildID == b.BuildID && a.OS == b.OS && a.Arch == b.Arch && a.URL == b.URL && strings.EqualFold(a.SHA256, b.SHA256) && a.SizeBytes == b.SizeBytes
 }
 
-func (m *Manager) downloadOnline(ctx context.Context, release OnlineRelease) (DownloadedRelease, error) {
+func (m *Manager) downloadOnline(ctx context.Context, release OnlineRelease) (downloaded DownloadedRelease, err error) {
+	finish := BeginDiagnostic(m.root, "download", release.Version)
+	defer func() { finish(err) }()
 	if err := ctx.Err(); err != nil {
 		return DownloadedRelease{}, err
 	}
 	m.mu.Lock()
 	config := m.online
 	m.mu.Unlock()
-	config, err := normalizeOnlineConfig(config)
+	config, err = normalizeOnlineConfig(config)
 	if err != nil {
 		return DownloadedRelease{}, err
 	}

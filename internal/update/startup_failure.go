@@ -17,7 +17,9 @@ func (m *Manager) PostponeStartup(ctx context.Context, failedVersion, previousVe
 	return m.restorePendingStartup(ctx, failedVersion, previousVersion, reason, false)
 }
 
-func (m *Manager) restorePendingStartup(ctx context.Context, failedVersion, previousVersion, reason string, reject bool) error {
+func (m *Manager) restorePendingStartup(ctx context.Context, failedVersion, previousVersion, reason string, reject bool) (err error) {
+	finish := BeginDiagnostic(m.root, "restore_version", previousVersion)
+	defer func() { finish(err) }()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lock, err := m.operationLock()

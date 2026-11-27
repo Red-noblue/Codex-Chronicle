@@ -368,10 +368,12 @@ func onlineHTTPClient(config OnlineConfig) (*http.Client, error) {
 }
 
 // CheckOnline 检查管理器配置的在线 feed；不会下载或切换版本。
-func (m *Manager) CheckOnline(ctx context.Context) (OnlineCheck, error) {
+func (m *Manager) CheckOnline(ctx context.Context) (check OnlineCheck, err error) {
 	if m == nil {
 		return OnlineCheck{}, errors.New("更新管理器未初始化")
 	}
+	finish := BeginDiagnostic(m.root, "check", "")
+	defer func() { finish(err) }()
 	m.mu.Lock()
 	state, err := m.readState()
 	config := m.online
@@ -387,10 +389,12 @@ func (m *Manager) PrepareOnline(ctx context.Context, allowDowngrade bool) (Plan,
 	return m.prepareOnline(ctx, allowDowngrade, false)
 }
 
-func (m *Manager) prepareOnline(ctx context.Context, allowDowngrade, automatic bool) (Plan, DownloadedRelease, error) {
+func (m *Manager) prepareOnline(ctx context.Context, allowDowngrade, automatic bool) (prepared Plan, downloadedRelease DownloadedRelease, err error) {
 	if m == nil {
 		return Plan{}, DownloadedRelease{}, errors.New("更新管理器未初始化")
 	}
+	finish := BeginDiagnostic(m.root, "prepare_online", "")
+	defer func() { finish(err) }()
 	// 下载与计划登记共用租约，避免清理恰好发生在文件下载完成、计划尚未持久化之间。
 	lease, err := acquireUpdateLock(filepath.Join(m.root, ".download.lock"))
 	if err != nil {
