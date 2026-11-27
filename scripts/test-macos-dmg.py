@@ -18,8 +18,8 @@ def run(arguments, **options):
 
 
 def main():
-    if sys.platform != "darwin" or len(sys.argv) != 3:
-        raise SystemExit("用法：python3 scripts/test-macos-dmg.py '/发布包.dmg' '预期版本'")
+    if sys.platform != "darwin" or len(sys.argv) not in (3, 4) or len(sys.argv) == 4 and sys.argv[3] != "--require-installed-entry":
+        raise SystemExit("用法：python3 scripts/test-macos-dmg.py '/发布包.dmg' '预期版本' [--require-installed-entry]")
     dmg, version = Path(sys.argv[1]).resolve(), sys.argv[2]
     scratch = Path(tempfile.mkdtemp(prefix="chronicle-dmg-drag-")).resolve()
     mount, source = scratch / "volume", scratch / "empty-source"
@@ -61,7 +61,21 @@ def main():
             assert state["active_version"] == version and state["installed_version"] == version, "复制后首次启动没有登记正确版本"
         duplicate = json.loads(run([copied_entry, "--no-browser", "--data-dir", profiles[1]], env=environment))
         assert duplicate["id"] == instance["id"], "重复打开产生第二个后台"
+        origin_path = profiles[1] / "desktop-launcher/installed-entry.json"
+        if len(sys.argv) == 4:
+            assert origin_path.is_file(), "已安装应用没有登记固定登录入口的安装位置"
+        if origin_path.is_file():
+            origin = json.loads(origin_path.read_text())
+            assert Path(origin["package_root"]).resolve() == (target / "Contents/Resources/app").resolve()
+            assert origin["installed_version"] == version
         run([copied_entry, "--quit", "--data-dir", profiles[1]], env=environment)
+        if origin_path.is_file():
+            fixed = profiles[1] / "desktop-launcher/codex-chronicle-desktop"
+            assert fixed.is_file()
+            shutil.rmtree(target)
+            run([fixed, "--launch-active", "--no-browser", "--data-dir", profiles[1]], env=environment)
+            assert not (profiles[1] / "runtime/instance.json").exists(), "应用移除后固定入口从保留缓存重新启动了后台"
+            print("通过：已安装应用登记真实位置，移除应用后固定登录入口安静退出，不从保留缓存重启", flush=True)
         assert not list(source.iterdir()), "拖放启动修改了扫描源"
         print("通过：DMG 仅含应用与应用程序入口；镜像内启动被阻止且未建资料；复制后首次启动及单实例核验通过", flush=True)
     finally:

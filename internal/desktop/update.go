@@ -37,6 +37,11 @@ func resolveUpdatePackage(ctx context.Context, options LaunchOptions) (LaunchOpt
 		if err := manager.RegisterInstallation(ctx, options.PackageRoot, options.ExpectedVersion); err != nil {
 			return options, err
 		}
+		if !options.StartupCheck {
+			if err := recordInstalledEntry(options.DataDir, options.PackageRoot); err != nil {
+				return options, err
+			}
+		}
 	}
 	if !options.StartupCheck {
 		options.PackageRoot, err = ActivePackageRoot(options.PackageRoot, options.DataDir)

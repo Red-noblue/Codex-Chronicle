@@ -435,6 +435,14 @@ try{
                 print(run([sys.executable, project / "scripts" / script, old_app, new_app], env=environment), end="", flush=True)
             print(run(["go", "test", "./internal/desktop", "-run", "^TestMacInstallInterruptedStages$", "-count=1"],
                       cwd=project, env=dict(environment, CHRONICLE_INSTALL_TEST_APP=str(new_app))), end="", flush=True)
+        elif sys.platform == "win32":
+            # 使用隔离测试签名生成真正的安装器，在 PR 回归阶段验证原生安装、窗口、登录及卸载行为。
+            compiler = Path(os.environ["ProgramFiles(x86)"]) / "Inno Setup 6/ISCC.exe"
+            installer_root = scratch / "windows-installer"
+            installer_root.mkdir()
+            installer_environment = dict(environment, CHRONICLE_VERSION=later_version, CHRONICLE_PAYLOAD=str(later), CHRONICLE_ARCH=arch)
+            run([compiler, "/O" + str(installer_root), "/FChronicle-Isolated-Test", project / "packaging/windows/installer.iss"], cwd=project, env=installer_environment)
+            print(run([sys.executable, project / "scripts/test-windows-installer.py", installer_root / "Chronicle-Isolated-Test.exe", later_version], env=environment), end="", flush=True)
     finally:
         try:
             if not safe_to_cleanup:

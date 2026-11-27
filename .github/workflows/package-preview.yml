@@ -72,6 +72,9 @@ jobs:
         run: |
           go test ./...
           go vet ./...
+      - name: Linux 安装卸载的更新进程保护
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-linux-package-lifecycle.py
       - name: Unix 真实执行器的合成资产回归
         if: runner.os != 'Windows'
         run: python3 -m unittest discover -s docs/项目验证 -p test_authorized_live.py
@@ -215,6 +218,13 @@ jobs:
         run: |
           $env:CHRONICLE_PAYLOAD = Join-Path $env:GITHUB_WORKSPACE "dist/$env:CHRONICLE_VERSION/windows-$env:CHRONICLE_ARCH/payload"
           & "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" packaging/windows/installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows 安装卸载与原生桌面验收
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $chronicleInstaller = Join-Path $env:GITHUB_WORKSPACE "dist/$env:CHRONICLE_VERSION/windows-$env:CHRONICLE_ARCH/Codex-Chronicle-$env:CHRONICLE_VERSION-$env:CHRONICLE_ARCH-Setup.exe"
+          python scripts/test-windows-installer.py $chronicleInstaller $env:CHRONICLE_VERSION
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: 生成 Linux DEB 与 RPM
         if: matrix.os == 'linux'
