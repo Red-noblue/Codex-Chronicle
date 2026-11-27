@@ -3,6 +3,7 @@ package update
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -92,7 +93,17 @@ func appendDiagnostic(ctx context.Context, root string, event DiagnosticEvent) e
 	}
 	event = sanitizeDiagnosticEvent(event)
 	events = append(events, event)
-	return writeAtomicJSON(ctx, filepath.Join(root, diagnosticEventsName), events)
+	for {
+		data, err := json.MarshalIndent(events, "", "  ")
+		if err != nil {
+			return err
+		}
+		if len(data)+1 <= diagnosticReadLimit {
+			return writeAtomic(ctx, filepath.Join(root, diagnosticEventsName), append(data, '\n'), 0o600)
+		}
+		// 长错误信息也必须服从读取上限，避免日志增长后再也无法记录或导出。
+		events = events[1:]
+	}
 }
 
 func lastDiagnosticFailure(root string) *DiagnosticEvent {

@@ -240,3 +240,21 @@ func TestDiagnosticFailureCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticsLongErrorsStayWithinReadableByteLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := range diagnosticEventLimit + 4 {
+		event := DiagnosticEvent{ID: fmt.Sprint(i), At: time.Now().UTC(), Stage: "restart", Result: "failed", TargetVersion: strings.Repeat("版本", 300), Message: strings.Repeat("错误", 300)}
+		if err := appendDiagnostic(t.Context(), root, event); err != nil {
+			t.Fatal("长错误令后续诊断无法写入", err)
+		}
+	}
+	info, err := os.Stat(filepath.Join(root, diagnosticEventsName))
+	if err != nil || info.Size() > diagnosticReadLimit {
+		t.Fatal("日志超过自身读取上限", err)
+	}
+	var events []DiagnosticEvent
+	if err := readDiagnosticJSON(root, diagnosticEventsName, &events); err != nil || len(events) == 0 || len(events) > diagnosticEventLimit || events[len(events)-1].ID != fmt.Sprint(diagnosticEventLimit+3) {
+		t.Fatal("无法读取或丢失最近的故障记录", err)
+	}
+}
