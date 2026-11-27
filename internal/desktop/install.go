@@ -125,8 +125,10 @@ func installMacApp(ctx context.Context, source, target, data string, output io.W
 				fmt.Fprintln(output, "安装检查失败，已恢复旧应用和升级前设置；未改动对话源或归档。")
 			}
 			_ = lock.Close()
-			if journal != nil && journal.PreviousHash != "" {
-				_ = runInstallCommand(recoveryCtx, io.Discard, filepath.Join(journal.Target, appEntry), "--no-browser", "--data-dir", data)
+			if recoveryErr == nil && journal != nil && journal.PreviousHash != "" && os.Getenv("CHRONICLE_NO_OPEN") != "1" {
+				if err := runInstallCommand(recoveryCtx, output, "/usr/bin/open", "-g", journal.Target, "--args", "--background", "--data-dir", data); err != nil {
+					resultErr = fmt.Errorf("%w；恢复的应用未能重新打开，请从应用程序中打开：%v", resultErr, err)
+				}
 			}
 			return
 		}
@@ -212,6 +214,12 @@ func installMacApp(ctx context.Context, source, target, data string, output io.W
 		return err
 	}
 	checkpoint("activated")
+	// 安装检查进程由终端启动；提交后结束它，再由外层通过 LaunchServices 启动正式应用。
+	fmt.Fprintln(output, "正在结束安装检查后台，准备交由系统启动应用…")
+	if err := Quit(ctx, data); err != nil {
+		return fmt.Errorf("应用已安装，但安装检查后台尚未退出：%w", err)
+	}
+	checkpoint("check_stopped")
 	if _, err := recoverInstallation(ctx, data); err != nil {
 		return err
 	}

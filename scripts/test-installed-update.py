@@ -358,6 +358,8 @@ func main(){
                 run(["codesign", "--force", "--sign", "-", app])
             for script in ("test-macos-install.py", "test-macos-install-interruption.py"):
                 print(run([sys.executable, project / "scripts" / script, old_app, new_app], env=environment), end="", flush=True)
+            print(run(["go", "test", "./internal/desktop", "-run", "^TestMacInstallInterruptedStages$", "-count=1"],
+                      cwd=project, env=dict(environment, CHRONICLE_INSTALL_TEST_APP=str(new_app))), end="", flush=True)
     finally:
         try:
             if not safe_to_cleanup:

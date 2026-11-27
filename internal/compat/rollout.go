@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
+	"unicode/utf8"
 
 	"codex-chronicle.local/internal/catalog"
 	"codex-chronicle.local/internal/domain"
@@ -321,24 +321,23 @@ func rawInt64(raw json.RawMessage) int64 {
 }
 
 func limitPreview(value string) string {
+	return limitTextBytes(value, maxPreviewBytes)
+}
+
+func limitTextBytes(value string, maxBytes int) string {
 	value = strings.TrimSpace(value)
-	if len([]byte(value)) <= maxPreviewBytes {
+	if len(value) <= maxBytes {
 		return value
 	}
-	data := []byte(value)
-	data = data[:maxPreviewBytes]
-	for len(data) > 0 && !unicode.IsSpace(rune(data[len(data)-1])) && (data[len(data)-1]&0xc0) == 0x80 {
-		data = data[:len(data)-1]
+	end := maxBytes
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
 	}
-	return string(data) + "…"
+	return value[:end] + "…"
 }
 
 func titleFromText(value string) string {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\n", " "))
-	if len(value) > 96 {
-		return limitPreview(value[:96])
-	}
-	return value
+	return limitTextBytes(strings.ReplaceAll(value, "\n", " "), 96)
 }
 
 func appendDiagnostic(items []domain.Diagnostic, item domain.Diagnostic) []domain.Diagnostic {

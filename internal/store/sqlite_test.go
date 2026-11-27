@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"codex-chronicle.local/internal/application"
 	"codex-chronicle.local/internal/domain"
@@ -307,6 +308,55 @@ func TestSyncInventoryBuildsFTSLocationsAndSearches(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].RelativePath != "rollout.jsonl" || hits[0].Line != 2 || hits[0].StartOffset <= 0 {
 		t.Fatalf("unexpected FTS locations: %+v", hits)
+	}
+}
+
+func TestSyncInventoryRebuildsInvalidUTF8PreviewsWithoutChangingSource(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+	path := filepath.Join(root, "rollout.jsonl")
+	message := strings.Repeat("中", 400)
+	source := `{"type":"session_meta","payload":{"id":"utf8-preview"}}` + "\n" +
+		`{"type":"event_msg","payload":{"type":"user_message","message":"` + message + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := application.NewScanner()
+	report, err := scanner.Scan(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Conversations) != 1 {
+		t.Fatalf("未识别合成对话：%d", len(report.Conversations))
+	}
+	archive, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	if _, err := archive.SyncInventory(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	// 重现旧版按字节截断造成的损坏，随后从未变更的源文件正常重建派生字段。
+	if _, err := archive.db.ExecContext(ctx, "UPDATE conversations SET title = ?, first_user_text = ?", message[:95], message[:1024]); err != nil {
+		t.Fatal(err)
+	}
+	report, err = scanner.Scan(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.SyncInventory(ctx, report); err != nil {
+		t.Fatal(err)
+	}
+	var title, preview string
+	if err := archive.db.QueryRowContext(ctx, "SELECT title, first_user_text FROM conversations").Scan(&title, &preview); err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(title) || !utf8.ValidString(preview) || title != strings.Repeat("中", 32)+"…" || preview != strings.Repeat("中", 341)+"…" {
+		t.Fatal("正常扫描没有从源文本恢复完整的 UTF-8 摘要")
+	}
+	if current, err := os.ReadFile(path); err != nil || string(current) != source {
+		t.Fatal("重建派生摘要改动了原始会话")
 	}
 }
 
