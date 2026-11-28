@@ -49,6 +49,38 @@ class CandidateTests(unittest.TestCase):
     def verify(self, digest=None):
         return candidate.verify(self.output, self.version, self.repository, digest or self.digest, self.selection)
 
+    def test_recommendation_requires_observation_and_exact_immutable_release(self):
+        manifest = self.verify()
+        release = {"id": 10, "tag_name": "v" + self.version, "draft": False, "immutable": True, "prerelease": True,
+                   "assets": [{"name": p.name, "state": "uploaded", "size": p.stat().st_size,
+                               "digest": "sha256:" + candidate.release_feed.file_digest(p)} for p in self.output.iterdir()]}
+        def api(args, **kwargs):
+            endpoint = args[1]
+            if "/compare/" in endpoint: return {"status": "ahead"}
+            if "/contents/" in endpoint: return None
+            if "/git/ref/" in endpoint: return {"object": {"type": "commit", "sha": self.commit}}
+            if "/releases/tags/" in endpoint: return release
+            self.fail("推荐核验不应写入GitHub：" + str(args))
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": self.repository}):
+            with patch.object(candidate, "select_from_github", return_value=self.selection), patch.object(candidate, "verify_attestation"), patch.object(candidate, "gh", side_effect=api):
+                for confirmed, note in [(False, "已完成实机观察"), (True, " ")]:
+                    with self.assertRaises(ValueError): candidate.recommend(self.output, manifest, self.selection, self.digest, confirmed, note)
+                self.assertEqual(candidate.recommend(self.output, manifest, self.selection, self.digest, True, "模式与暂停续传实测通过"), release)
+                release["immutable"] = False
+                with self.assertRaises(ValueError): candidate.recommend(self.output, manifest, self.selection, self.digest, True, "已观察")
+                release["immutable"] = True
+                release["assets"][0]["digest"] = "sha256:" + "0" * 64
+                with self.assertRaises(ValueError): candidate.recommend(self.output, manifest, self.selection, self.digest, True, "已观察")
+
+    def test_publishing_and_recommendation_are_separate_workflow_operations(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/package-preview.yml"
+        text = workflow.read_text()
+        channel = text.split("  update-channel:", 1)[1]
+        self.assertIn("inputs.operation == 'recommend'", channel)
+        self.assertNotIn("inputs.operation == 'publish'", channel)
+        self.assertIn("CHRONICLE_OBSERVATION_CONFIRMED", channel)
+        self.assertIn("核验公开资产仍与观察候选完全一致", channel)
+
     def test_frozen_candidate_covers_all_final_bytes_and_refuses_reseal(self):
         before = {p.name: p.read_bytes() for p in self.output.iterdir()}
         manifest = self.verify()

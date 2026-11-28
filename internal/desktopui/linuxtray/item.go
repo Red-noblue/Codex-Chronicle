@@ -26,12 +26,16 @@ const (
 	Logs          int32           = 6
 	Quit          int32           = 7
 	Manage        int32           = 8
+	Updates       int32           = 9
+	Download      int32           = 10
 )
 
 type State struct {
-	URL                       string
-	Login, Fallback, Stopping bool
-	SettingsError             string
+	URL                            string
+	Login, Fallback, Stopping      bool
+	SettingsError                  string
+	UpdateLabel                    string
+	UpdatePaused, UpdateCanControl bool
 }
 type Layout struct {
 	ID         int32
@@ -147,10 +151,10 @@ func (i *Item) Register(ctx context.Context) bool {
 }
 
 func (i *Item) dispatch(id int32) *dbus.Error {
-	if id < Open || id > Manage {
+	if id < Open || id > Download {
 		return dbus.NewError("com.canonical.dbusmenu.Error.InvalidMenuItem", []any{"未知菜单项"})
 	}
-	if i.state().Stopping && (id == Open || id == Quit) {
+	if i.state().Stopping && (id == Open || id == Quit || id == Download || id == Updates) {
 		return nil
 	}
 	select {
@@ -204,6 +208,18 @@ func layout(state State) Layout {
 		add(106, "设置读取失败，请打开端口设置修复", false, nil)
 	}
 	separator(107)
+	if state.UpdateLabel != "" {
+		add(108, state.UpdateLabel, false, nil)
+	}
+	if state.UpdateCanControl {
+		title := "暂停更新下载"
+		if state.UpdatePaused {
+			title = "继续下载"
+		}
+		add(Download, title, !state.Stopping, nil)
+	}
+	add(Updates, "更新设置…", !state.Stopping, nil)
+	separator(109)
 	add(Logs, "打开日志文件夹", true, nil)
 	add(Quit, "退出 Codex Chronicle", !state.Stopping, nil)
 	return root

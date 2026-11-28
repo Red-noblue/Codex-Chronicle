@@ -45,6 +45,9 @@ func BeginDiagnostic(root, stage, target string) func(error) {
 		event.At, event.Result = time.Now().UTC(), "succeeded"
 		if failure != nil {
 			event.Result, event.Code, event.Message = "failed", diagnosticErrorCode(stage, failure), failure.Error()
+			if errors.Is(failure, ErrDownloadPaused) || errors.Is(failure, errDownloadPolicyChanged) || errors.Is(failure, context.Canceled) {
+				event.Result = "cancelled"
+			}
 			var space *InsufficientSpaceError
 			if errors.As(failure, &space) {
 				event.RequiredBytes, event.AvailableBytes = space.RequiredBytes, space.AvailableBytes
@@ -124,6 +127,10 @@ func diagnosticErrorCode(stage string, err error) string {
 	var timeout net.Error
 	var space *InsufficientSpaceError
 	switch {
+	case errors.Is(err, ErrDownloadPaused):
+		return "download_paused"
+	case errors.Is(err, errDownloadPolicyChanged):
+		return "update_mode_changed"
 	case errors.Is(err, context.Canceled):
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):

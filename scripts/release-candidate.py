@@ -296,9 +296,52 @@ def publish(root, manifest, selection, expected_digest):
     return release
 
 
+
+def dispatch_recommend(run_id, version, repository, expected_digest, confirmed, note):
+    if not confirmed or not note.strip() or len(note) > 2000:
+        raise ValueError("推荐前必须确认已完成观察验收并填写观察结论")
+    if os.environ.get("GITHUB_ACTIONS") == "true" or not run_id or not DIGEST.fullmatch(expected_digest):
+        raise ValueError("请在本机指定候选编号和完整摘要派发推荐")
+    selected = select_from_github(run_id, version, repository, publishing=True)
+    prefix, tag = "repos/" + repository, "v" + version
+    release = gh(["api", f"{prefix}/releases/tags/{tag}"])
+    if release.get("draft") is not False or release.get("immutable") is not True or resolve_tag(repository, tag) != selected["source_commit"]:
+        raise ValueError("必须先公开与候选源码匹配的不可变 Release")
+    verify_channel_order(repository, version)
+    gh(["api", prefix + "/actions/workflows/package-preview.yml/dispatches", "--method", "POST"], body={
+        "ref": "main", "inputs": {"operation": "recommend", "version": version, "candidate_run_id": str(run_id),
+        "candidate_sha256": expected_digest, "observation_confirmed": True, "observation_note": note.strip()}})
+
+
+def recommend(root, manifest, selection, expected_digest, confirmed, note):
+    if not confirmed or not note.strip() or len(note) > 2000:
+        raise ValueError("推荐前必须确认已完成观察验收并填写观察结论")
+    repository, version = manifest["repository"], manifest["version"]
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_REPOSITORY") != repository:
+        raise ValueError("自动推荐只能从本仓库 main 的受控工作流执行")
+    latest = select_from_github(selection["run_id"], version, repository, publishing=True)
+    if latest != selection:
+        raise ValueError("观察期间候选记录发生变化，停止推荐")
+    manifest = verify(root, version, repository, expected_digest, selection)
+    verify_attestation(root, selection)
+    prefix, tag = "repos/" + repository, "v" + version
+    if resolve_tag(repository, tag) != manifest["source_commit"]:
+        raise ValueError("公开标签与观察候选的源码不一致")
+    if gh(["api", f"{prefix}/compare/{manifest['source_commit']}...main"]).get("status") not in ("ahead", "identical"):
+        raise ValueError("候选不在 main 历史中")
+    verify_channel_order(repository, version)
+    release = gh(["api", f"{prefix}/releases/tags/{tag}"])
+    if release.get("draft") is not False or release.get("immutable") is not True or release.get("prerelease") != (manifest["channel"] == "preview"):
+        raise ValueError("公开版本不是匹配的不可变 Release")
+    release_feed.verify_uploaded_assets(root, release, version, require_draft=False)
+    print(json.dumps({"recommended_version": version, "release_id": release["id"], "source_commit": manifest["source_commit"],
+                      "observation_note": note.strip()}, ensure_ascii=False))
+    return release
+
+
 def main():
     parser = argparse.ArgumentParser(description="冻结、验证和推广同一份已验收的 GitHub 发布候选")
-    parser.add_argument("command", choices=("seal", "select", "verify", "dispatch-publish", "publish"))
+    parser.add_argument("command", choices=("seal", "select", "verify", "dispatch-publish", "publish", "dispatch-recommend", "recommend"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--root", type=Path, default=Path("publish"))
@@ -310,6 +353,8 @@ def main():
     parser.add_argument("--selection", type=Path)
     parser.add_argument("--for-publish", action="store_true")
     parser.add_argument("--attestation", action="store_true")
+    parser.add_argument("--observation-confirmed", action="store_true")
+    parser.add_argument("--observation-note", default="")
     args = parser.parse_args()
     try:
         config = release_feed.release_config(args.version, args.repository)
@@ -329,6 +374,9 @@ def main():
         elif args.command == "dispatch-publish":
             dispatch_publish(args.run_id, args.version, args.repository, args.expected_sha256)
             print("已核验仓库设置、固定候选标签并派发同包发布")
+        elif args.command == "dispatch-recommend":
+            dispatch_recommend(args.run_id, args.version, args.repository, args.expected_sha256, args.observation_confirmed, args.observation_note)
+            print("已派发独立推荐；工作流将重新核验公开资产与观察候选")
         elif args.command == "select":
             if not args.run_id or args.selection is None:
                 raise ValueError("选择候选必须指定构建编号和 selection 文件")
@@ -345,6 +393,9 @@ def main():
                 verify_attestation(args.root, selection)
             if args.command == "publish":
                 publish(args.root, manifest, selection, args.expected_sha256)
+                print("Release已公开，静态自动更新通道保持不变；观察后另行推荐")
+            elif args.command == "recommend":
+                recommend(args.root, manifest, selection, args.expected_sha256, args.observation_confirmed, args.observation_note)
             print("已公开并核验同一候选" if args.command == "publish" else "候选字节、来源身份与指定验收记录核对通过")
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         parser.exit(1, f"发布候选检查失败：{error}\n")

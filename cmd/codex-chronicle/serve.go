@@ -64,7 +64,7 @@ func serve(address string, handler http.Handler, server *api.Server, lease *desk
 				return err
 			}
 		}
-		handler = lease.Handler(handler, requestStop, stopping.Load)
+		handler = lease.Handler(handler, requestStop, stopping.Load, server.DesktopUpdateHandler())
 	}
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	serveError := make(chan error, 1)

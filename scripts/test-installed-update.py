@@ -48,6 +48,7 @@ def main():
     release = {}
     policy = {}
     artifacts = {}
+    transfer = {"slow": False, "resumed": False}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -63,10 +64,28 @@ def main():
                 if body is None:
                     self.send_error(404)
                     return
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
+            offset = 0
+            partial = request_path == "/release.zip" and self.headers.get("Range", "").startswith("bytes=")
+            if partial:
+                offset = int(self.headers["Range"][6:].split("-", 1)[0])
+                assert 0 < offset < len(body)
+                transfer["resumed"] = True
+            self.send_response(206 if partial else 200)
+            if partial:
+                self.send_header("Content-Range", f"bytes {offset}-{len(body)-1}/{len(body)}")
+            self.send_header("ETag", '"' + hashlib.sha256(body).hexdigest() + '"')
+            self.send_header("Content-Length", str(len(body)-offset))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                if transfer["slow"] and request_path == "/release.zip":
+                    for index in range(offset, len(body), 32768):
+                        self.wfile.write(body[index:index+32768])
+                        self.wfile.flush()
+                        time.sleep(.005)
+                else:
+                    self.wfile.write(body[offset:])
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def log_message(self, *_):
             pass
@@ -200,7 +219,32 @@ func main(){
         print("通过：首次启动自动建立签名基线、版本准确、重复打开复用已有后台", flush=True)
 
         select_release(new_version, new_archive)
-        plan = request("/api/v1/update/prepare-online", {}, 201)["plan"]
+        # 四种方式的真实后台下载不依赖网页长请求，暂停后按Range续传，准备完成仍等待用户安装。
+        def wait_update(predicate):
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                value = request("/api/v1/update/status")["status"]
+                if predicate(value):
+                    return value
+                time.sleep(.05)
+            raise AssertionError("更新控制状态未按期推进")
+        request("/api/v1/update/automatic", {"mode": "notify"}, method="PUT")
+        notified = wait_update(lambda value: value["automatic"]["phase"] == "available")
+        assert not notified.get("pending_plan_ids") and not notified.get("download")
+        transfer["slow"] = True
+        request("/api/v1/update/automatic", {"mode": "download"}, method="PUT")
+        wait_update(lambda value: (value.get("download") or {}).get("received_bytes", 0) > 0)
+        request("/api/v1/update/control", {"action": "pause"}, 202)
+        paused = wait_update(lambda value: value["automatic"]["download_paused"] and not value.get("download"))
+        assert paused["state"]["active_version"] == old_version
+        request("/api/v1/update/control", {"action": "resume"}, 202)
+        ready = wait_update(lambda value: value["automatic"]["phase"] == "waiting_install")
+        assert ready["state"]["active_version"] == old_version and transfer["resumed"]
+        transfer["slow"] = False
+        request("/api/v1/update/automatic", {"mode": "manual"}, method="PUT")
+        plan_id = ready["automatic"]["plan_id"]
+        plan = json.loads((profile / "updates/plans" / ("plan-" + plan_id + ".json")).read_text())
+        print("通过：仅提醒不下载、后台下载不安装、暂停停止传输、Range续传、手动模式保持当前运行版本", flush=True)
         assert plan["previous_version"] == old_version
         policy["withdrawn_versions"] = [{"version": new_version, "reason": "隔离演练：撤回已下载候选"}]
         failure = request("/api/v1/update/activate", {"plan_id": plan["id"]}, 409)

@@ -68,6 +68,15 @@ func chronicleAction(action, value *C.char, enabled C.int) *C.char {
 		settings, login, stateErr := controller.settings()
 		result["port"], result["auto_fallback"], result["autostart"], result["url"] = settings.Port, settings.AutoFallback, login, controller.url
 		err = stateErr
+		result["update"] = controller.updateState()
+	case "update-state":
+		state := controller.updateState()
+		data, _ := json.Marshal(state)
+		return C.CString(string(data))
+	case "updates":
+		err = controller.openUpdates()
+	case "download":
+		err = controller.toggleDownload()
 	case "port":
 		err = controller.savePort(C.GoString(value), enabled != 0)
 	case "fallback":

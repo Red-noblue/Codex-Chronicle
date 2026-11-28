@@ -166,3 +166,32 @@ func TestDBusSignatures(t *testing.T) {
 		}
 	}
 }
+
+// 中文说明：更新状态、继续下载与设置入口使用真实DBusMenu条目，退出时不再接受新的更新动作。
+func TestUpdateMenuAndControlDispatch(t *testing.T) {
+	state := State{UpdateLabel: "更新已下载，等待安装", UpdatePaused: true, UpdateCanControl: true}
+	root := layout(state)
+	found := map[int32]Layout{}
+	for _, child := range root.Children {
+		entry := child.Value().(Layout)
+		found[entry.ID] = entry
+	}
+	if found[Download].Properties["label"].Value() != "继续下载" || found[Updates].Properties["label"].Value() != "更新设置…" || found[108].Properties["enabled"].Value() != false {
+		t.Fatal("更新菜单不完整", found)
+	}
+	actions := make(chan int32, 2)
+	item := Item{state: func() State { return state }, actions: actions}
+	if err := item.dispatch(Download); err != nil {
+		t.Fatal(err)
+	}
+	if <-actions != Download {
+		t.Fatal("继续下载动作未送达")
+	}
+	state.Stopping = true
+	if err := item.dispatch(Download); err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 0 {
+		t.Fatal("退出时仍触发新的下载")
+	}
+}

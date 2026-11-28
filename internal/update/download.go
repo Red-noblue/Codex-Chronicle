@@ -36,9 +36,21 @@ func sameOnlineRelease(a, b OnlineRelease) bool {
 	return a.Version == b.Version && a.BuildID == b.BuildID && a.OS == b.OS && a.Arch == b.Arch && a.URL == b.URL && strings.EqualFold(a.SHA256, b.SHA256) && a.SizeBytes == b.SizeBytes
 }
 
-func (m *Manager) downloadOnline(ctx context.Context, release OnlineRelease) (downloaded DownloadedRelease, err error) {
+func (m *Manager) downloadOnline(ctx context.Context, release OnlineRelease, automatic bool) (downloaded DownloadedRelease, err error) {
+	var end func()
+	ctx, end, err = m.beginDownload(ctx, automatic)
+	if err != nil {
+		return DownloadedRelease{}, err
+	}
+	defer end()
 	finish := BeginDiagnostic(m.root, "download", release.Version)
 	defer func() { finish(err) }()
+	defer func() {
+		if cause := context.Cause(ctx); err != nil && cause != nil {
+			err = errors.Join(err, cause)
+		}
+	}()
+
 	if err := ctx.Err(); err != nil {
 		return DownloadedRelease{}, err
 	}

@@ -1161,3 +1161,8 @@ select { color-scheme: inherit; }
 .restricted-impact { min-width: 0; margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-control); font-size: var(--font-caption); }
 .restricted-impact summary { cursor: pointer; }
 .restricted-impact pre { max-height: 340px; margin-bottom: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-caption); }
+
+/* 中文说明：更新方式与下载操作保持紧凑排列，窄屏允许换行。 */
+.update-mode-select { max-width: 100%; min-width: 0; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-actions:empty { display: none; }

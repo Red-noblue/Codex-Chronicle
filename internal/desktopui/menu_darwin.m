@@ -74,6 +74,12 @@ static void settingsDialog(void) {
     self.statusItem.button.target = self;
     self.statusItem.button.action = @selector(clicked:);
     [self.statusItem.button sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
+    [NSTimer scheduledTimerWithTimeInterval:3.0 target:self selector:@selector(refreshUpdate:) userInfo:nil repeats:YES];
+}
+- (void)refreshUpdate:(NSTimer *)timer {
+    if (self.stopping) return;
+    NSDictionary *update = action(@"update-state", nil, NO);
+    self.statusItem.button.toolTip = [NSString stringWithFormat:@"Codex Chronicle · %@\n%@", update[@"label"] ?: @"后台运行中", self.url];
 }
 - (NSMenuItem *)item:(NSString *)title action:(SEL)selector menu:(NSMenu *)menu {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:selector keyEquivalent:@""];
@@ -107,6 +113,11 @@ static void settingsDialog(void) {
     [self item:@"端口设置下次启动生效" action:nil menu:menu];
     if (state[@"error"]) [self item:@"设置读取失败，请打开端口设置修复" action:nil menu:menu];
     [menu addItem:NSMenuItem.separatorItem];
+    NSDictionary *update = state[@"update"] ?: @{};
+    [self item:update[@"label"] ?: @"更新状态暂不可用" action:nil menu:menu];
+    if ([update[@"can_control"] boolValue]) [self item:[update[@"paused"] boolValue] ? @"继续下载" : @"暂停更新下载" action:@selector(toggleDownload:) menu:menu];
+    [self item:@"更新设置…" action:@selector(openUpdates:) menu:menu];
+    [menu addItem:NSMenuItem.separatorItem];
     [self item:@"打开日志文件夹" action:@selector(openLogs:) menu:menu];
     [self item:self.stopping ? @"正在安全退出…" : @"退出 Codex Chronicle" action:self.stopping ? nil : @selector(quitBackend:) menu:menu];
     // 临时交给 NSStatusItem 定位和展开，避免普通弹出菜单将顶部信息滚动到屏幕之外。
@@ -130,6 +141,8 @@ static void settingsDialog(void) {
     NSDictionary *result = action(name, nil, NO);
     if (result[@"error"]) showMessage(@"设置未能保存", result[@"error"]);
 }
+- (void)toggleDownload:(id)sender { [self performSetting:@"download"]; }
+- (void)openUpdates:(id)sender { [self performSetting:@"updates"]; }
 - (void)toggleLogin:(id)sender { [self performSetting:@"autostart"]; }
 - (void)toggleFallback:(id)sender { [self performSetting:@"fallback"]; }
 - (void)portSettings:(id)sender { settingsDialog(); }
