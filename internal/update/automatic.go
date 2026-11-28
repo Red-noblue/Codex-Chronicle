@@ -106,6 +106,11 @@ func (m *Manager) automaticStepAt(ctx context.Context, runningVersion string, id
 		if err != nil {
 			return err
 		}
+		if state.ManualDownload && !plan.Automatic && plan.Online != nil {
+			state.ManualPlanID, state.TargetVersion, state.Phase = plan.ID, plan.Version, "waiting_install"
+			state.ManualDownload = false
+			return m.saveAutomatic(ctx, state)
+		}
 		if plan.Automatic {
 			state.PlanID, state.TargetVersion, state.Phase = plan.ID, plan.Version, "waiting_idle"
 			if state.Mode != ModeAutomatic {

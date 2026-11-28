@@ -340,3 +340,32 @@ func TestAutomaticDoesNotInstallOverAnotherManualPlan(t *testing.T) {
 		t.Fatal(status.State)
 	}
 }
+
+// 中文说明：模拟人工后台下载已登记计划、尚未保存UI状态就中断，恢复后仍只等待人工安装。
+func TestManualDownloadRecoversPlanRegistrationCrash(t *testing.T) {
+	m, calls, _, _ := automaticFixture(t)
+	_ = m.SetMode(t.Context(), ModeManual)
+	_ = m.ControlDownload(t.Context(), "download")
+	now := time.Now().UTC()
+	restart := func(context.Context, string) error { t.Error("恢复后自动安装了人工计划"); return nil }
+	if err := m.automaticStepAt(t.Context(), "1.0.0", func() bool { return true }, m.VerifyVersionRoot, restart, now); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := m.Status(t.Context())
+	id := status.Automatic.ManualPlanID
+	interrupted := status.Automatic
+	interrupted.ManualPlanID = ""
+	interrupted.ManualDownload = true
+	interrupted.Phase = "downloading"
+	if err := m.saveAutomatic(t.Context(), interrupted); err != nil {
+		t.Fatal(err)
+	}
+	requests := calls.Load()
+	if err := m.automaticStepAt(t.Context(), "1.0.0", func() bool { return true }, m.VerifyVersionRoot, restart, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = m.Status(t.Context())
+	if status.Automatic.ManualPlanID != id || status.Automatic.Phase != "waiting_install" || calls.Load() != requests {
+		t.Fatalf("未恢复已登记的人工下载计划：%+v", status.Automatic)
+	}
+}
