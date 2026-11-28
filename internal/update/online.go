@@ -349,7 +349,7 @@ func (m *Manager) DownloadOnline(ctx context.Context, release OnlineRelease) (Do
 		return DownloadedRelease{}, err
 	}
 	defer lease.Close()
-	return m.downloadOnline(ctx, release)
+	return m.downloadOnline(ctx, release, false)
 }
 
 func onlineHTTPClient(config OnlineConfig) (*http.Client, error) {
@@ -411,7 +411,7 @@ func (m *Manager) prepareOnline(ctx context.Context, allowDowngrade, automatic b
 	if !check.Available || check.Release == nil {
 		return Plan{}, DownloadedRelease{}, errors.New("在线 feed 没有高于当前版本的可用更新")
 	}
-	downloaded, err := m.downloadOnline(ctx, *check.Release)
+	downloaded, err := m.downloadOnline(ctx, *check.Release, automatic)
 	if err != nil {
 		return Plan{}, DownloadedRelease{}, err
 	}

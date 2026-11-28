@@ -154,9 +154,10 @@ func (l *Lease) Close() error {
 }
 
 // Handler 的控制入口只接受私有凭证；网页和其他占用同一端口的服务不能被误认或退出。
-func (l *Lease) Handler(next http.Handler, stop func(), stopping func() bool) http.Handler {
+func (l *Lease) Handler(next http.Handler, stop func(), stopping func() bool, updateControls ...http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != controlPath && r.URL.Path != controlPath+"/quit" && r.URL.Path != controlPath+"/activate" {
+		privateUpdate := r.URL.Path == controlPath+"/update/status" || r.URL.Path == controlPath+"/update/control"
+		if !privateUpdate && r.URL.Path != controlPath && r.URL.Path != controlPath+"/quit" && r.URL.Path != controlPath+"/activate" {
 			if l.paused.Load() && r.URL.Path != "/healthz" && r.URL.Path != "/api/v1/health/preflight" {
 				http.Error(w, "安装检查尚未完成，暂不接受操作", http.StatusServiceUnavailable)
 				return
@@ -169,6 +170,18 @@ func (l *Lease) Handler(next http.Handler, stop func(), stopping func() bool) ht
 		if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() ||
 			subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+l.Instance.Token)) != 1 {
 			http.Error(w, "需要有效的本机控制凭证", http.StatusUnauthorized)
+			return
+		}
+		if privateUpdate {
+			if l.paused.Load() || stopping() {
+				http.Error(w, "后台正在安装或退出", http.StatusServiceUnavailable)
+				return
+			}
+			if len(updateControls) == 0 || updateControls[0] == nil {
+				http.NotFound(w, r)
+				return
+			}
+			http.StripPrefix(controlPath, updateControls[0]).ServeHTTP(w, r)
 			return
 		}
 		if r.URL.Path == controlPath+"/quit" {
@@ -234,15 +247,21 @@ func (i Instance) controlURL(suffix string) (string, error) {
 }
 
 func (i Instance) request(ctx context.Context, method, suffix string) (*http.Response, error) {
+	return i.requestBody(ctx, method, suffix, nil)
+}
+func (i Instance) requestBody(ctx context.Context, method, suffix string, body io.Reader) (*http.Response, error) {
 	address, err := i.controlURL(suffix)
 	if err != nil {
 		return nil, err
 	}
-	r, err := http.NewRequestWithContext(ctx, method, address, nil)
+	r, err := http.NewRequestWithContext(ctx, method, address, body)
 	if err != nil {
 		return nil, err
 	}
 	r.Header.Set("Authorization", "Bearer "+i.Token)
+	if body != nil {
+		r.Header.Set("Content-Type", "application/json")
+	}
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	return client.Do(r)

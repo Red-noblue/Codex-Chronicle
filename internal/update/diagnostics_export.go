@@ -74,8 +74,8 @@ func BuildDiagnostics(ctx context.Context, updateRoot, version string) (Diagnost
 		return raw
 	}
 	state := collect("installation", updateRoot, StateName, "installed_version active_version previous_version last_operation_id last_status last_error confirmed_at cleanup_after cleanup_retention_minutes rejected_version deferred_version updated_at")
-	collect("automatic", updateRoot, "automatic-state.json", "enabled phase plan_id target_version failed_version last_error last_checked_at next_check_at")
-	collect("automatic_settings", updateRoot, "automatic-settings.json", "enabled")
+	collect("automatic", updateRoot, "automatic-state.json", "enabled mode download_paused phase plan_id manual_plan_id manual_download target_version failed_version last_error last_checked_at next_check_at")
+	collect("automatic_settings", updateRoot, "automatic-settings.json", "enabled mode download_paused")
 	collect("installation_journal", updateRoot, JournalName, "operation_id plan_id version previous_version phase updated_at error")
 	collect("restart_journal", updateRoot, "restart-journal.json", "version previous phase")
 	collect("cleanup", updateRoot, "last-cleanup.json", "running_version removed_items freed_bytes completed_at warnings")

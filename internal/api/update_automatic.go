@@ -2,8 +2,10 @@
 package api
 
 import (
+	updatepkg "codex-chronicle.local/internal/update"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"mime"
@@ -27,18 +29,31 @@ func (s *Server) updateAutomaticHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var input struct {
-		Enabled *bool `json:"enabled"`
+		Enabled *bool                 `json:"enabled"`
+		Mode    *updatepkg.UpdateMode `json:"mode"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || input.Enabled == nil {
-		writeError(w, http.StatusBadRequest, "必须明确设置自动更新是否开启")
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF || (input.Enabled == nil) == (input.Mode == nil) {
+		writeError(w, http.StatusBadRequest, "必须明确指定一种更新方式，或提供兼容的自动更新开关")
 		return
 	}
-	if err := s.updater.SetAutomatic(r.Context(), *input.Enabled); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	var changeErr error
+	if input.Mode != nil {
+		changeErr = s.updater.SetMode(r.Context(), *input.Mode)
+	} else {
+		changeErr = s.updater.SetAutomatic(r.Context(), *input.Enabled)
+	}
+	if changeErr != nil {
+		code := http.StatusConflict
+		if errors.Is(changeErr, updatepkg.ErrInvalidUpdateMode) {
+			code = http.StatusBadRequest
+		}
+		writeError(w, code, changeErr.Error())
 		return
 	}
+	s.wakeAutomaticUpdates()
+
 	status, err := s.updater.Status(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -82,6 +97,14 @@ func (s *Server) RunAutomaticUpdates(ctx context.Context, paused func() bool) {
 	idleTicker := time.NewTicker(time.Second)
 	defer idleTicker.Stop()
 	var stepDone <-chan struct{}
+	wakePending := false
+	startStep := func() {
+		if ctx.Err() == nil && stepDone == nil && !paused() {
+			done := make(chan struct{})
+			stepDone = done
+			go func() { defer close(done); s.runAutomaticUpdateStep(ctx) }()
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -98,12 +121,18 @@ func (s *Server) RunAutomaticUpdates(ctx context.Context, paused func() bool) {
 			}
 		case <-stepDone:
 			stepDone = nil
-		case <-timer.C:
-			if stepDone == nil && !paused() {
-				done := make(chan struct{})
-				stepDone = done
-				go func() { defer close(done); s.runAutomaticUpdateStep(ctx) }()
+			if wakePending {
+				wakePending = false
+				startStep()
 			}
+		case <-s.updateWake:
+			if stepDone != nil {
+				wakePending = true
+			} else {
+				startStep()
+			}
+		case <-timer.C:
+			startStep()
 			timer.Reset(time.Minute)
 		}
 	}
@@ -128,4 +157,58 @@ func (s *Server) runAutomaticUpdateStep(ctx context.Context) {
 	if err := s.updater.AutomaticStep(stepCtx, s.version, s.automaticUpdateIdle, s.updateHealthCheck(), s.updateAutomaticRestart); err != nil && ctx.Err() == nil {
 		log.Printf("自动更新暂未完成，将稍后重试：%v", err)
 	}
+}
+
+// wakeAutomaticUpdates 唤醒既有调度器，不创建脱离后台生命周期的下载任务。
+func (s *Server) wakeAutomaticUpdates() {
+	select {
+	case s.updateWake <- struct{}{}:
+	default:
+	}
+}
+func (s *Server) updateDownloadControlHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "只支持 POST")
+		return
+	}
+	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
+		writeError(w, 415, "下载操作必须使用 application/json")
+		return
+	}
+	if s.updater == nil || s.updateAutomaticRestart == nil {
+		writeError(w, 409, "当前后台不支持下载控制")
+		return
+	}
+	var input struct {
+		Action string `json:"action"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF {
+		writeError(w, 400, "下载操作必须是有效 JSON")
+		return
+	}
+	if input.Action != "pause" && input.Action != "resume" && input.Action != "retry" && input.Action != "download" {
+		writeError(w, 400, "请选择暂停、继续、重试或下载")
+		return
+	}
+	if err := s.updater.ControlDownload(r.Context(), input.Action); err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	s.wakeAutomaticUpdates()
+	status, err := s.updater.Status(r.Context())
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 202, map[string]any{"status": status})
+}
+
+// DesktopUpdateHandler 仅交给已通过实例私有凭证验证的本机控制入口，不绕过网页的用户认证。
+func (s *Server) DesktopUpdateHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/update/status", s.updateStatusHandler)
+	mux.HandleFunc("/update/control", s.updateDownloadControlHandler)
+	return mux
 }

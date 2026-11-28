@@ -45,6 +45,7 @@ type Server struct {
 	draining               bool
 	activeRequests         int
 	updateLastActivity     time.Time
+	updateWake             chan struct{}
 	updateAutomaticRestart func(context.Context, string) error
 	scanner                application.Scanner
 	root                   string
@@ -176,7 +177,7 @@ func NewServerWithOptionsAndRegistry(root string, archive *store.Store, lifecycl
 	}
 	copyTasks := copypkg.NewManagerWithPlanRoot(copyPlanRoot)
 	summaryRegistry := summarypkg.DefaultRegistry()
-	server := &Server{scanner: scanner, root: root, archive: archive, tasks: application.NewTaskManager(scanner), summaryTasks: application.NewSummaryTaskManager(scanner, summaryRegistry), summaryRegistry: summaryRegistry, copyTasks: copyTasks, liveCopyTasks: copypkg.NewLiveManager(), lifecycle: lifecycleOptions, registry: registry, remoteDownloads: make(map[string]*remoteDownloadPlan), remoteRestores: make(map[string]*remoteRestorePlan), localRestorePlans: make(map[string]*localArchiveRestorePlan), remoteDeletes: make(map[string]*remoteDeletePlan), maintenancePlans: make(map[string]maintenancepkg.Plan), cleanupPlans: make(map[string]maintenancepkg.CleanupPlan), pendingStores: make(map[string]*pendingpkg.Store), workspaceArchives: make(map[string]*store.Store), resourceBudget: budget, trashSettings: trashSettings, trashSettingsErr: trashSettingsErr}
+	server := &Server{updateWake: make(chan struct{}, 1), scanner: scanner, root: root, archive: archive, tasks: application.NewTaskManager(scanner), summaryTasks: application.NewSummaryTaskManager(scanner, summaryRegistry), summaryRegistry: summaryRegistry, copyTasks: copyTasks, liveCopyTasks: copypkg.NewLiveManager(), lifecycle: lifecycleOptions, registry: registry, remoteDownloads: make(map[string]*remoteDownloadPlan), remoteRestores: make(map[string]*remoteRestorePlan), localRestorePlans: make(map[string]*localArchiveRestorePlan), remoteDeletes: make(map[string]*remoteDeletePlan), maintenancePlans: make(map[string]maintenancepkg.Plan), cleanupPlans: make(map[string]maintenancepkg.CleanupPlan), pendingStores: make(map[string]*pendingpkg.Store), workspaceArchives: make(map[string]*store.Store), resourceBudget: budget, trashSettings: trashSettings, trashSettingsErr: trashSettingsErr}
 	server.executionReviews = make(map[string]*executionReview)
 	server.executionConfirmations = make(map[string]*executionConfirmation)
 	server.executionTasks = make(map[string]*executionTask)
@@ -655,6 +656,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/update/diagnostics", s.updateDiagnosticsHandler)
 	mux.HandleFunc("/api/v1/update/proxy", s.updateProxyHandler)
 	mux.HandleFunc("/api/v1/update/automatic", s.updateAutomaticHandler)
+	mux.HandleFunc("/api/v1/update/control", s.updateDownloadControlHandler)
 	mux.HandleFunc("/api/v1/update/cleanup-settings", s.updateCleanupSettingsHandler)
 	mux.HandleFunc("/api/v1/update/activity", s.updateActivityHandler)
 	mux.HandleFunc("/api/v1/update/check", s.updateCheckHandler)

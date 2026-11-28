@@ -227,6 +227,8 @@ func (ui *linuxUI) state() linuxtray.State {
 	stopping := ui.stopping
 	ui.mu.Unlock()
 	state := linuxtray.State{URL: controller.url, Login: login, Fallback: settings.AutoFallback, Stopping: stopping}
+	update := controller.updateState()
+	state.UpdateLabel, state.UpdatePaused, state.UpdateCanControl = update.Label, update.Paused, update.CanControl
 	if err != nil {
 		state.SettingsError = err.Error()
 	}
@@ -249,9 +251,17 @@ func (ui *linuxUI) showManager() {
 		if state.Fallback {
 			fallback = "开启"
 		}
-		text := "工作台运行中：" + state.URL + "\nGNOME 需 AppIndicator 扩展才能显示图标。\n关闭此窗口后后台继续运行，可从应用菜单再次打开。"
+		text := state.UpdateLabel + "\n工作台运行中：" + state.URL + "\nGNOME 需 AppIndicator 扩展才能显示图标。\n关闭此窗口后后台继续运行，可从应用菜单再次打开。"
 		choices := []string{"--list", "--title=Codex Chronicle · 后台管理", "--text=" + text, "--width=520", "--height=480", "--column=操作编号", "--column=操作", "--hide-column=1", "--print-column=1", "--ok-label=执行", "--cancel-label=关闭窗口",
-			"1", "打开工作台", "2", "查看并复制工作台地址", "3", "登录时启动：" + login, "4", "端口设置…", "5", "端口占用时自动回退：" + fallback, "6", "打开日志文件夹", "7", "安全退出 Codex Chronicle"}
+			"1", "打开工作台", "2", "查看并复制工作台地址", "3", "登录时启动：" + login, "4", "端口设置…", "5", "端口占用时自动回退：" + fallback, "9", "更新设置…"}
+		if state.UpdateCanControl {
+			label := "暂停更新下载"
+			if state.UpdatePaused {
+				label = "继续下载"
+			}
+			choices = append(choices, "10", label)
+		}
+		choices = append(choices, "6", "打开日志文件夹", "7", "安全退出 Codex Chronicle")
 		selected, err := linuxDialog(ui.context, choices...)
 		ui.mu.Lock()
 		ui.dialog = false
@@ -319,6 +329,10 @@ func (ui *linuxUI) handle(id int32) {
 			linuxSettings(ui.context)
 		case linuxtray.Fallback:
 			err = controller.toggleFallback()
+		case linuxtray.Updates:
+			err = controller.openUpdates()
+		case linuxtray.Download:
+			err = controller.toggleDownload()
 		case linuxtray.Logs:
 			err = controller.logs()
 		}

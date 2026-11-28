@@ -56,6 +56,8 @@ const (
 	cmdFallback = 105
 	cmdLogs     = 106
 	cmdQuit     = 107
+	cmdUpdates  = 108
+	cmdDownload = 109
 	cmdSave     = 1
 	cmdCancel   = 2
 	wsChild     = 0x40000000
@@ -191,6 +193,7 @@ func runWindows(standalone bool) {
 	if standalone {
 		ui.showSettings()
 	} else {
+		user32.NewProc("SetTimer").Call(hwnd, 2, 3000, 0)
 		ui.icon = archiveIcon()
 		defer user32.NewProc("DestroyIcon").Call(ui.icon)
 		ui.notification = iconData{Window: hwnd, ID: 1, Flags: 1 | 2 | 4 | 0x80, Callback: wmTray, Icon: ui.icon, Version: 4}
@@ -267,8 +270,12 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 				return 0
 			}
 			switch message {
-			case 0x0113: // WM_TIMER：启动时等待通知区域准备好。
-				ui.addIcon()
+			case 0x0113: // WM_TIMER：图标恢复和更新状态分别使用固定编号。
+				if wParam == 1 {
+					ui.addIcon()
+				} else if wParam == 2 && !ui.standalone && !ui.stopping {
+					ui.tooltip(controller.updateState().Label)
+				}
 				return 0
 			case wmTray:
 				switch uint32(lParam & 0xffff) {
@@ -356,6 +363,17 @@ func (w *windowsUI) menu() {
 		add(0, "设置读取失败，请打开端口设置修复", 2)
 	}
 	separator()
+	update := controller.updateState()
+	add(0, update.Label, 2)
+	if update.CanControl {
+		title := "暂停更新下载"
+		if update.Paused {
+			title = "继续下载"
+		}
+		add(cmdDownload, title, 0)
+	}
+	add(cmdUpdates, "更新设置…", 0)
+	separator()
 	add(cmdLogs, "打开日志文件夹", 0)
 	checked = 0
 	title := "退出 Codex Chronicle"
@@ -381,6 +399,10 @@ func (w *windowsUI) menu() {
 		return
 	case cmdFallback:
 		err = controller.toggleFallback()
+	case cmdUpdates:
+		err = controller.openUpdates()
+	case cmdDownload:
+		err = controller.toggleDownload()
 	case cmdLogs:
 		err = controller.logs()
 	case cmdQuit:

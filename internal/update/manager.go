@@ -153,6 +153,8 @@ type Manager struct {
 	online            OnlineConfig
 	diskSpaceCheck    func(string, int64, string) error
 	downloadProgress  *DownloadProgress
+	downloadCancel    context.CancelCauseFunc
+	downloadAutomatic bool
 	registerArtifact  func(context.Context, maintenance.ArtifactManifest) (maintenance.ArtifactManifest, error)
 }
 

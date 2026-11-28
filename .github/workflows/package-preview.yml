@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 构建候选、验证已有候选，或公开已有候选
+        description: 构建、验证、公开观察版，或观察后推荐到自动更新
         required: true
         default: candidate
         type: choice
-        options: [candidate, verify, publish]
+        options: [candidate, verify, publish, recommend]
       version:
         description: 固定目标版本，例如 0.1.0-preview.16；同一公开版本不允许替换
         required: true
@@ -29,6 +29,15 @@ on:
         required: false
         default: false
         type: boolean
+      observation_confirmed:
+        description: 推荐时确认已完成实机或隔离观察验收；公开Release本身不会推进自动更新
+        required: false
+        default: false
+        type: boolean
+      observation_note:
+        description: 推荐时填写观察结论，将保留在工作流与更新通道提交记录
+        required: false
+        type: string
       release_notes:
         description: 构建候选时可指定仓库内已审核的说明文件；正式版必须指定
         required: false
@@ -335,7 +344,7 @@ jobs:
           path: publish/*
   inspect:
     name: 验证已验收候选
-    if: github.event_name == 'workflow_dispatch' && (inputs.operation == 'verify' || inputs.operation == 'publish')
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == 'verify' || inputs.operation == 'publish' || inputs.operation == 'recommend')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -363,7 +372,7 @@ jobs:
         run: |
           [[ "$CHRONICLE_CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo '必须指定已验收候选清单的 SHA-256' >&2; exit 1; }
           chronicle_publish=()
-          if [[ "$CHRONICLE_OPERATION" == publish ]]; then
+          if [[ "$CHRONICLE_OPERATION" == publish || "$CHRONICLE_OPERATION" == recommend ]]; then
             [[ "$GITHUB_REF" == refs/heads/main ]] || { echo '公开发布只能从 main 执行' >&2; exit 1; }
             chronicle_publish=(--for-publish)
           fi
@@ -419,24 +428,47 @@ jobs:
       - name: 只上传缺失资产并公开同一份候选
         run: python3 scripts/release-candidate.py publish --root candidate --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --expected-sha256 "$CHRONICLE_CANDIDATE_SHA" --selection "$RUNNER_TEMP/selection.json"
   update-channel:
-    name: 更新静态版本通道
-    needs: [inspect, release]
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'publish' && github.ref == 'refs/heads/main'
+    name: 观察验收后推荐到静态版本通道
+    needs: inspect
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'recommend' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
       group: chronicle-update-feeds
       cancel-in-progress: false
+    environment: release
     permissions:
       contents: write
+      actions: read
+      attestations: read
     env:
       GH_TOKEN: ${{ github.token }}
       CHRONICLE_VERSION: ${{ inputs.version }}
       CHRONICLE_CHANNEL: ${{ needs.inspect.outputs.channel }}
+      CHRONICLE_SOURCE_RUN: ${{ inputs.candidate_run_id }}
+      CHRONICLE_CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+      CHRONICLE_OBSERVATION_CONFIRMED: ${{ inputs.observation_confirmed }}
+      CHRONICLE_OBSERVATION_NOTE: ${{ inputs.observation_note }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
+      - name: 要求明确的观察确认
+        shell: bash
+        run: |
+          [[ "$CHRONICLE_OBSERVATION_CONFIRMED" == true && -n "$CHRONICLE_OBSERVATION_NOTE" ]] || { echo '先完成观察验收并填写结论，再推荐自动更新' >&2; exit 1; }
+      - name: 重新绑定同一候选
+        run: python3 scripts/release-candidate.py select --run-id "$CHRONICLE_SOURCE_RUN" --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --for-publish
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.inspect.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run_id }}
+          repository: ${{ github.repository }}
+          merge-multiple: true
+          path: candidate
+      - name: 核验公开资产仍与观察候选完全一致
+        run: python3 scripts/release-candidate.py recommend --root candidate --version "$CHRONICLE_VERSION" --repository "$GITHUB_REPOSITORY" --expected-sha256 "$CHRONICLE_CANDIDATE_SHA" --selection "$RUNNER_TEMP/selection.json" --observation-confirmed --observation-note "$CHRONICLE_OBSERVATION_NOTE"
       - name: 原子推进已公开版本的静态索引
         shell: bash
         run: |
@@ -460,5 +492,5 @@ jobs:
             echo '静态版本通道已是相同或更新版本'
             exit 0
           fi
-          git -C "$chronicle_channel" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "更新 $CHRONICLE_CHANNEL 通道到 $CHRONICLE_VERSION"
+          git -C "$chronicle_channel" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "更新 $CHRONICLE_CHANNEL 通道到 $CHRONICLE_VERSION" -m "$CHRONICLE_OBSERVATION_NOTE"
           git -C "$chronicle_channel" -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD:refs/heads/update-feeds
