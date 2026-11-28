@@ -221,7 +221,15 @@ def main():
             except Exception:
                 safe = False
         if safe:
-            shutil.rmtree(scratch)
+            # 卸载器的临时进程可能稍晚释放本轮日志，只等待已观察到的 Windows 文件共享占用。
+            for attempt in range(100):
+                try:
+                    shutil.rmtree(scratch)
+                    break
+                except PermissionError as error:
+                    if error.winerror != 32 or attempt == 99:
+                        raise
+                    time.sleep(.1)
         else:
             print("保留尚未退出或卸载的 Windows 隔离验收目录：" + str(scratch), file=sys.stderr)
 
