@@ -197,6 +197,13 @@ def main():
             assert kernel32.WaitForSingleObject(backend, 20000) == 0, "卸载后后台进程未退出"
         finally:
             kernel32.CloseHandle(backend)
+        # ARM Windows 可能在父进程返回后才释放卸载器镜像；等待其自行删除，而非由测试强行清理。
+        for _ in range(200):
+            if not uninstaller.exists() and registry_value(uninstall_key, "InstallLocation") is None:
+                break
+            time.sleep(.1)
+        assert not uninstaller.exists(), "卸载器未在时限内完成自身清理"
+        assert registry_value(uninstall_key, "InstallLocation") is None, "卸载后仍保留应用卸载登记"
         installed = False
         for _ in range(100):
             if not (profile / "runtime/instance.json").exists():
