@@ -1,4 +1,4 @@
-; 中文说明：Windows 每用户安装器模板；升级或卸载前请求安全退出，仅移除安装文件，保留用户数据和归档。
+; 中文说明：Windows 每用户安装器；签名载荷与卸载元数据分开，安全迁移旧布局，保留用户数据和归档。
 #define ChronicleVersion GetEnv("CHRONICLE_VERSION")
 #define ChroniclePayload GetEnv("CHRONICLE_PAYLOAD")
 #define ChronicleArch GetEnv("CHRONICLE_ARCH")
@@ -26,25 +26,55 @@ Compression=lzma2
 SolidCompression=yes
 CloseApplications=no
 RestartApplications=no
-UninstallDisplayIcon={app}\bin\codex-chronicle-desktop.exe
+UninstallDisplayIcon={app}\app\bin\codex-chronicle-desktop.exe
 
 [Files]
-Source: "{#ChroniclePayload}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ChroniclePayload}\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\bin"; Check: HasLegacyPayload
+Type: filesandordirs; Name: "{app}\web"; Check: HasLegacyPayload
+Type: filesandordirs; Name: "{app}\update"; Check: HasLegacyPayload
+Type: filesandordirs; Name: "{app}\licenses"; Check: HasLegacyPayload
+Type: files; Name: "{app}\codex-chronicle-release.json"; Check: HasLegacyPayload
 
 [Icons]
-Name: "{group}\Codex Chronicle"; Filename: "{app}\bin\codex-chronicle-desktop.exe"
-Name: "{group}\退出 Codex Chronicle 后台"; Filename: "{app}\bin\codex-chronicle-desktop.exe"; Parameters: "--quit"
+Name: "{group}\Codex Chronicle"; Filename: "{app}\app\bin\codex-chronicle-desktop.exe"
+Name: "{group}\退出 Codex Chronicle 后台"; Filename: "{app}\app\bin\codex-chronicle-desktop.exe"; Parameters: "--quit"
 
 [Run]
-Filename: "{app}\bin\codex-chronicle-desktop.exe"; Description: "打开 Codex Chronicle"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\app\bin\codex-chronicle-desktop.exe"; Description: "打开 Codex Chronicle"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  LegacyOwned: Boolean;
+  LegacyDirectory: String;
+
+function HasLegacyPayload(): Boolean;
+var
+  CurrentDirectory, PreviousLocation: String;
+begin
+  CurrentDirectory := AddBackslash(ExpandConstant('{app}'));
+  if CompareText(LegacyDirectory, CurrentDirectory) <> 0 then
+  begin
+    LegacyDirectory := CurrentDirectory;
+    { 只清理同一 AppId 已登记目录里的旧程序文件，不按文件夹名称猜测其他目录的归属。 }
+    LegacyOwned := FileExists(ExpandConstant('{app}\codex-chronicle-release.json')) and
+      FileExists(ExpandConstant('{app}\bin\codex-chronicle-desktop.exe')) and
+      RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{5FA52307-E1AC-4396-8C46-3F2D56214CF4}_is1', 'InstallLocation', PreviousLocation) and
+      (CompareText(AddBackslash(PreviousLocation), CurrentDirectory) = 0);
+  end;
+  Result := LegacyOwned;
+end;
+
 function StopBackend(): Boolean;
 var
   ResultCode: Integer;
   Launcher: String;
 begin
-  Launcher := ExpandConstant('{app}\bin\codex-chronicle-desktop.exe');
+  Launcher := ExpandConstant('{app}\app\bin\codex-chronicle-desktop.exe');
+  if not FileExists(Launcher) then
+    Launcher := ExpandConstant('{app}\bin\codex-chronicle-desktop.exe');
   Result := True;
   if FileExists(Launcher) then
     Result := Exec(Launcher, '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
@@ -54,7 +84,10 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if not StopBackend() then
+  begin
     Result := '后台任务尚未完成，未强制退出。请等待任务结束后重试安装。';
+    Exit;
+  end;
 end;
 
 function InitializeUninstall(): Boolean;

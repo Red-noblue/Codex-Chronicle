@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -149,6 +150,9 @@ func PrepareLoginLauncher(ctx context.Context, options LaunchOptions) (err error
 	if !found {
 		return fmt.Errorf("签名清单缺少桌面启动器")
 	}
+	if err := discoverLegacyInstalledEntry(ctx, options); err != nil {
+		return err
+	}
 	enabled, err := AutostartEnabled(target, options.DataDir, "")
 	if err != nil || !enabled {
 		return err
@@ -234,6 +238,13 @@ func LaunchActiveFromLogin(ctx context.Context, executable, dataDir string, noBr
 		return fmt.Errorf("尚无可用的活动版本，请从已安装的应用重新打开")
 	}
 	root, err := ActivePackageRoot("", dataDir)
+	if err != nil {
+		return err
+	}
+	root, err = loginPackageRoot(ctx, manager, dataDir, root)
+	if errors.Is(err, errInstalledEntryRemoved) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

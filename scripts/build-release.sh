@@ -106,7 +106,7 @@ if [[ "$chronicle_os" == darwin ]]; then
   fi
   hdiutil verify -quiet "$chronicle_dmg"
   if [[ "$chronicle_arch" == "$(go env GOARCH)" ]]; then
-    python3 scripts/test-macos-dmg.py "$chronicle_dmg" "$chronicle_version"
+    python3 scripts/test-macos-dmg.py "$chronicle_dmg" "$chronicle_version" --require-installed-entry
   fi
 fi
 (
