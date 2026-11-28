@@ -187,14 +187,17 @@ func NewManagerWithOptions(root string, options ManagerOptions) (*Manager, error
 	if err != nil {
 		return nil, err
 	}
-	proxyPath := filepath.Join(abs, "online-proxy.json")
-	if storedProxy, loadErr := loadOnlineProxy(proxyPath); loadErr != nil {
-		return nil, loadErr
-	} else if storedProxy != nil {
-		online.ProxyURL = *storedProxy
-		online, err = normalizeOnlineConfig(online)
-		if err != nil {
-			return nil, err
+	// 离线验签和启动确认不使用网络，不能因保存的代理设置而要求配置更新源。
+	if online.FeedURL != "" {
+		proxyPath := filepath.Join(abs, "online-proxy.json")
+		if storedProxy, loadErr := loadOnlineProxy(proxyPath); loadErr != nil {
+			return nil, loadErr
+		} else if storedProxy != nil {
+			online.ProxyURL = *storedProxy
+			online, err = normalizeOnlineConfig(online)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &Manager{root: abs, trustedPublicKeys: keys, requireSignature: options.RequireSignature, online: online}, nil
