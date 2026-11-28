@@ -1006,6 +1006,7 @@
     { minutes: 10080, label: '7 天' }, { minutes: 43200, label: '30 天' }
   ];
   let updateStatusPolling = false;
+  let updateAnchorHandled = false;
   let updateMessage = '';
   let updateDiagnosticsExporting = false;
   let updateDiagnosticsMessage = '';
@@ -1266,6 +1267,12 @@
   $: batchSharedError = batchOperationPreview?.items.length && batchOperationPreview.items.every(item => item.blocked && item.error === batchOperationPreview?.items[0].error) ? batchOperationPreview.items[0].error || '' : '';
   // 隐藏面板会测到零高度，保留上一次有效行高，避免虚拟列表出现除零和空白。
   $: if (measuredConversationRowHeight > 0) conversationRowHeight = measuredConversationRowHeight;
+
+  // 中文说明：托盘直达链接等待异步设置内容渲染后仅定位一次，后续轮询不打断用户滚动。
+  $: if (applicationStarted && activeWorkspace === 'settings' && updateStatus && !updateAnchorHandled && window.location.hash === '#setting-updates') {
+    updateAnchorHandled = true;
+    void tick().then(() => document.getElementById('setting-updates')?.scrollIntoView({ block: 'start' }));
+  }
 
   onMount(() => {
     applyBrowserRoute();
