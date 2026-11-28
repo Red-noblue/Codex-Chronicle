@@ -51,13 +51,15 @@ def main():
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path in ("/preview.json", "/stable.json"):
+            # 同一隔离服务也接收 HTTP 代理的绝对地址请求，覆盖保存代理后的完整启动链路。
+            request_path = urllib.parse.urlsplit(self.path).path
+            if request_path in ("/preview.json", "/stable.json"):
                 feed = {"format_version": 1, "product": "codex-chronicle", "releases": [release], **policy}
                 if policy.get("updates_paused") or any(item["version"] == release.get("version") for item in policy.get("withdrawn_versions", [])):
                     feed["held_releases"], feed["releases"] = feed["releases"], []
                 body = json.dumps(feed).encode()
             else:
-                body = artifacts.get(self.path)
+                body = artifacts.get(request_path)
                 if body is None:
                     self.send_error(404)
                     return
@@ -182,12 +184,14 @@ func main(){
         launcher = old / ("bin/codex-chronicle-desktop" + suffix)
         first = launch(launcher)
         request("/api/v1/update/automatic", {"enabled": False}, method="PUT")
+        request("/api/v1/update/proxy", {"proxy_url": base_url}, method="PUT")
         (profile / "startup.json").write_text(json.dumps({"port": urllib.parse.urlsplit(address).port, "auto_fallback": True}), encoding="utf-8")
         state = request("/api/v1/update/status")["status"]
         assert first["version"] == old_version
         assert state["state"]["active_version"] == old_version and state["state"]["installed_version"] == old_version
         assert not state["state"].get("previous_version") and state["signature_required"]
         assert state["online_feed_url"] == base_url + "/preview.json"
+        assert state["online_proxy_url"] == base_url
         assert json.loads(run([launcher, "--no-browser", "--data-dir", profile], env=environment))["id"] == first["id"]
         with closing(sqlite3.connect(profile / "archive.db")) as database:
             database.execute("CREATE TABLE installed_update_marker(value TEXT)")
@@ -216,6 +220,7 @@ func main(){
         assert second["version"] == new_version and second["id"] != first["id"]
         assert state["state"]["previous_version"] == old_version
         assert state["online_feed_url"] == base_url + "/stable.json", "旧启动器沿用了旧更新渠道"
+        assert state["online_proxy_url"] == base_url, "升级后丢失更新代理"
         assert not request("/api/v1/update/check")["available"]
         assert state["state"]["confirmed_at"] and state["state"]["cleanup_after"], state
         assert list((profile / "updates/bundles").glob("download-*.archive")), "观察期内提前清理了安装包"
