@@ -99,8 +99,8 @@ def main():
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.GetDlgItem.restype = wintypes.HWND
-    user32.SetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
-    user32.SetWindowTextW.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
     user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.SendMessageW.restype = ctypes.c_ssize_t
 
@@ -146,12 +146,24 @@ def main():
 
         settings = subprocess.Popen([str(launcher), "--startup-settings", "--data-dir", str(profile)], env=environment)
         dialog = window("端口设置 · Codex Chronicle", settings)
-        editor, save = user32.GetDlgItem(dialog, 201), user32.GetDlgItem(dialog, 1)
-        assert editor and save and user32.SetWindowTextW(editor, str(selected_port))
+        for _ in range(100):
+            editor, save = user32.GetDlgItem(dialog, 201), user32.GetDlgItem(dialog, 1)
+            if editor and save and user32.IsWindowVisible(dialog):
+                break
+            time.sleep(.05)
+        assert editor and save and user32.IsWindowVisible(dialog), "原生输入控件尚未就绪"
+        # 跨进程编辑控件使用系统 WM_SETTEXT，并在点击前回读实际文本，避免只改变窗口标题。
+        value = ctypes.create_unicode_buffer(str(selected_port))
+        assert user32.SendMessageW(editor, 0x000C, 0, ctypes.cast(value, ctypes.c_void_p).value)
+        observed = ctypes.create_unicode_buffer(32)
+        user32.SendMessageW(editor, 0x000D, len(observed), ctypes.cast(observed, ctypes.c_void_p).value)
+        assert observed.value == str(selected_port), ("原生端口文本未生效", observed.value, selected_port)
+        checkbox = user32.GetDlgItem(dialog, 202)
+        assert user32.SendMessageW(checkbox, 0x00F0, 0, 0) == 1, "默认自动回退未选中"
         user32.SendMessageW(save, 0x00F5, 0, 0)  # BM_CLICK：使用原生按钮消息执行实际保存。
         assert settings.wait(timeout=15) == 0
         saved = json.loads((profile / "startup.json").read_text())
-        assert saved == {"port": selected_port, "auto_fallback": True}
+        assert saved == {"port": selected_port, "auto_fallback": True}, ("原生设置保存不符", saved, selected_port)
         assert json.loads((profile / "runtime/instance.json").read_text())["id"] == first["id"]
         gui = subprocess.Popen([str(launcher), "--background", "--data-dir", str(profile)], env=environment)
         window("Codex Chronicle", gui)

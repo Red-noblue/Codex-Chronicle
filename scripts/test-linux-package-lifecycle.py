@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 中文说明：只用临时复制的休眠程序验证 Linux 安装卸载保护，覆盖更新目录中的后台和启动器，绝不强杀其他进程。
+# 中文说明：只用自建休眠程序验证 Linux 安装卸载保护，覆盖更新目录中的后台和启动器，不依赖系统核心工具的调用名称。
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,15 +12,18 @@ def main():
     if sys.platform != "linux":
         raise SystemExit("此验收必须在 Linux 执行")
     guard = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "packaging/linux/before-change.sh"
-    sleep = Path(shutil.which("sleep")).resolve()
     with tempfile.TemporaryDirectory(prefix="chronicle-package-lifecycle-") as scratch:
+        probe = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path(scratch) / "probe"
+        if len(sys.argv) <= 2:
+            sample = Path(scratch) / "probe.go"
+            sample.write_text('// 中文说明：仅供本轮进程保护验收的休眠样本。\npackage main\nimport "time"\nfunc main(){time.Sleep(time.Minute)}\n')
+            subprocess.run(["go", "build", "-o", str(probe), str(sample)], check=True, timeout=120)
         root = Path(scratch) / "profile/updates/versions/0.1.0-preview.20/bin"
         root.mkdir(parents=True)
         for name, expected in (("unrelated-program", 0), ("codex-chronicle", 1), ("codex-chronicle-desktop", 1)):
             executable = root / name
-            shutil.copy2(sleep, executable)
-            # 兼容将 sleep 实现为多调用核心工具的发行版，同时保持 /proc 中的真实可执行路径。
-            process = subprocess.Popen(["sleep", "60"], executable=str(executable))
+            shutil.copy2(probe, executable)
+            process = subprocess.Popen([str(executable)])
             try:
                 time.sleep(.1)
                 assert process.poll() is None, "休眠样本未正常启动"
