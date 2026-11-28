@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 中文说明：构建不依赖源码工作目录的发布载荷；macOS 原生生成 .app、ZIP 和 DMG，不安装或改动真实 .codex。
 set -euo pipefail
+trap 'echo "发布构建失败，脚本行号：$LINENO" >&2' ERR
 
 chronicle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chronicle_version="${1:?用法：scripts/build-release.sh 0.1.0-preview.1 [darwin|windows|linux] [arm64|amd64]}"
@@ -98,13 +99,15 @@ if [[ "$chronicle_os" == darwin ]]; then
   # 仅在 DMG 安装界面提供标准拖放目标；应用与更新载荷内部仍禁止符号链接。
   ln -s /Applications "$chronicle_temp/dmg/应用程序"
   chronicle_dmg="$chronicle_output/Codex-Chronicle-$chronicle_version-macOS-$chronicle_arch.dmg"
-  hdiutil create -quiet -volname 'Codex Chronicle' -srcfolder "$chronicle_temp/dmg" -format UDZO "$chronicle_dmg"
+  echo "正在创建 macOS 磁盘镜像：$chronicle_arch"
+  hdiutil create -volname 'Codex Chronicle' -srcfolder "$chronicle_temp/dmg" -format UDZO "$chronicle_dmg"
   if [[ -n "${CHRONICLE_NOTARY_PROFILE:-}" ]]; then
     [[ -n "${CHRONICLE_SIGN_IDENTITY:-}" ]] || { echo '公证必须先配置 Developer ID 签名' >&2; exit 1; }
     xcrun notarytool submit "$chronicle_dmg" --keychain-profile "$CHRONICLE_NOTARY_PROFILE" --wait
     xcrun stapler staple "$chronicle_dmg"
   fi
-  hdiutil verify -quiet "$chronicle_dmg"
+  echo "正在校验 macOS 磁盘镜像：$chronicle_arch"
+  hdiutil verify "$chronicle_dmg"
   if [[ "$chronicle_arch" == "$(go env GOARCH)" ]]; then
     python3 scripts/test-macos-dmg.py "$chronicle_dmg" "$chronicle_version" --require-installed-entry
   fi
