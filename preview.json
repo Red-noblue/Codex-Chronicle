@@ -2,68 +2,67 @@
   "format_version": 1,
   "product": "codex-chronicle",
   "channel": "preview",
-  "generated_at": "2026-11-28T07:24:44.638218Z",
-  "releases": [],
+  "generated_at": "2026-11-28T08:01:26.850259Z",
+  "releases": [
+    {
+      "version": "0.1.0-preview.22",
+      "os": "darwin",
+      "arch": "amd64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-darwin-amd64.zip",
+      "sha256": "0bc99491fb49a91b35dbc17c547a891beb916f812875f8177e91970dd8be2877",
+      "size_bytes": 16937746,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    },
+    {
+      "version": "0.1.0-preview.22",
+      "os": "darwin",
+      "arch": "arm64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-darwin-arm64.zip",
+      "sha256": "c5aeb049f349b0820b0a473d653afe2b7bfee5bb3c6e0068ea25b7bd6acf93f4",
+      "size_bytes": 15814731,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    },
+    {
+      "version": "0.1.0-preview.22",
+      "os": "windows",
+      "arch": "amd64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-windows-amd64.zip",
+      "sha256": "7e68c8f820b42ea4017cd149f66e314af2bb87d618b015bf8406309fa97f2ea5",
+      "size_bytes": 16913359,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    },
+    {
+      "version": "0.1.0-preview.22",
+      "os": "windows",
+      "arch": "arm64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-windows-arm64.zip",
+      "sha256": "1c63838d889f2f464dd617edf5ad89a34ee5637e7d728d1f0eb77a7369e9e2e0",
+      "size_bytes": 15729118,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    },
+    {
+      "version": "0.1.0-preview.22",
+      "os": "linux",
+      "arch": "amd64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-linux-amd64.zip",
+      "sha256": "16a4529662824c2d4ae84f363c9ff2d180ab78def513db4e50e03b6763792ce5",
+      "size_bytes": 17611052,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    },
+    {
+      "version": "0.1.0-preview.22",
+      "os": "linux",
+      "arch": "arm64",
+      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.22/Codex-Chronicle-0.1.0-preview.22-linux-arm64.zip",
+      "sha256": "807325bf0813b1e98f57d8201d9fd5ba12f2e177309314230c4ed8b0339650d9",
+      "size_bytes": 16541419,
+      "build_id": "626dd152435e4ee60550ace83d9518284394dbf0"
+    }
+  ],
   "withdrawn_versions": [
     {
       "version": "0.1.0-preview.21",
       "reason": "配置更新代理时，固定启动入口的离线校验初始化失败；客户端会安全回退。修复后将发布新的预览版本。"
-    }
-  ],
-  "held_releases": [
-    {
-      "version": "0.1.0-preview.21",
-      "os": "darwin",
-      "arch": "amd64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-darwin-amd64.zip",
-      "sha256": "b2b10fdd6588dec217512cbfe410452ac9c845b37852c92d02e4836f8d409215",
-      "size_bytes": 16937333,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
-    },
-    {
-      "version": "0.1.0-preview.21",
-      "os": "darwin",
-      "arch": "arm64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-darwin-arm64.zip",
-      "sha256": "9c420cf5d944e1172727323b4cef60af8aee926ff24affee6408af441ee8ab38",
-      "size_bytes": 15814749,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
-    },
-    {
-      "version": "0.1.0-preview.21",
-      "os": "windows",
-      "arch": "amd64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-windows-amd64.zip",
-      "sha256": "309d678233b4046d5abb915014832b08b40c1b5f956c9239d8a875aecf316d7b",
-      "size_bytes": 16913454,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
-    },
-    {
-      "version": "0.1.0-preview.21",
-      "os": "windows",
-      "arch": "arm64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-windows-arm64.zip",
-      "sha256": "43a2b1c826fec090331310b4ef04efcb2bd7b4c2f87c46107baeec3439f88efb",
-      "size_bytes": 15729103,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
-    },
-    {
-      "version": "0.1.0-preview.21",
-      "os": "linux",
-      "arch": "amd64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-linux-amd64.zip",
-      "sha256": "e5898c209e3b971f16f936930fa88503a2e1b1da7bdc826bb6e6fc7af690612a",
-      "size_bytes": 17611038,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
-    },
-    {
-      "version": "0.1.0-preview.21",
-      "os": "linux",
-      "arch": "arm64",
-      "url": "https://github.com/Red-noblue/Codex-Chronicle/releases/download/v0.1.0-preview.21/Codex-Chronicle-0.1.0-preview.21-linux-arm64.zip",
-      "sha256": "17e3083f1f2699783483fa0ec338648dd61fc80c00ab895c83f43dc8b65cbd51",
-      "size_bytes": 16541452,
-      "build_id": "d522bc82df82aef65f2d37cc369396fd53f93ef7"
     }
   ]
 }
